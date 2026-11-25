@@ -820,7 +820,19 @@ object OrbitEngineRepository {
         if (decoded !is BackupImportResult.Success) {
             return false
         }
-        mutateSettings { current -> OrbitBackupCodec.mergeInto(current, decoded.payload) }
+        synchronized(stateLock) {
+            val prev = _uiState.value
+            val nextSettings = OrbitBackupCodec.mergeInto(prev.settings, decoded.payload)
+            _uiState.value = recomputeDerivedState(
+                prev.copy(
+                    settings = nextSettings,
+                    manualOverrideMode = null,
+                ),
+            )
+            enqueueSettingsTransformLocked { current ->
+                OrbitBackupCodec.mergeInto(current, decoded.payload)
+            }
+        }
         return true
     }
 

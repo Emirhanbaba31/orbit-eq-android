@@ -1,5 +1,11 @@
 package com.orbiteq.app.service
 
+enum class SpectrumPublishAction {
+    PUBLISH_LIVE,
+    CLEAR_TO_ZERO,
+    PRESERVE_PREVIOUS,
+}
+
 object DspLoopCadencePlanner {
 
     const val RAMP_INTERVAL_MS = 35L
@@ -28,4 +34,13 @@ object DspLoopCadencePlanner {
         isUiVisible: Boolean,
         isLiveFftActive: Boolean,
     ): Boolean = isUiVisible && isLiveFftActive
+
+    fun spectrumPublishAction(
+        isUiVisible: Boolean,
+        isLiveFftActive: Boolean,
+    ): SpectrumPublishAction = when {
+        shouldPublishSpectrumBins(isUiVisible, isLiveFftActive) -> SpectrumPublishAction.PUBLISH_LIVE
+        !isLiveFftActive -> SpectrumPublishAction.CLEAR_TO_ZERO
+        else -> SpectrumPublishAction.PRESERVE_PREVIOUS
+    }
 }

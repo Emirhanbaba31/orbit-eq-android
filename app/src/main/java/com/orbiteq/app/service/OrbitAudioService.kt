@@ -118,6 +118,7 @@ class OrbitAudioService : Service() {
     private fun startStateObserver() {
         stateObserverJob?.cancel()
         stateObserverJob = serviceScope.launch {
+            var lastWidgetSignature: WidgetTileSignature? = null
             OrbitEngineRepository.uiState
                 .map { state ->
                     ObservedServiceState(
@@ -130,12 +131,15 @@ class OrbitAudioService : Service() {
                         trackTitle = state.nowPlaying.trackTitle,
                         artist = state.nowPlaying.artist,
                         connectedDevice = state.connectedDevice,
-                    )
+                    ) to OrbitWidgetUpdater.signatureFor(state)
                 }
                 .distinctUntilChanged()
-                .collect {
+                .collect { (_, widgetSignature) ->
                     wakeSignal.trySend(Unit)
-                    OrbitWidgetUpdater.requestUpdate(applicationContext)
+                    if (widgetSignature != lastWidgetSignature) {
+                        lastWidgetSignature = widgetSignature
+                        OrbitWidgetUpdater.requestUpdate(applicationContext)
+                    }
                 }
         }
     }
@@ -449,12 +453,12 @@ class OrbitAudioService : Service() {
                         hasNonZeroAdaptive = frame.adaptiveDeltaDb.any { abs(it) > 0.05f }
 
                         if (isActive && !isStopping) {
-                            val spectrumBins = if (
-                                DspLoopCadencePlanner.shouldPublishSpectrumBins(isUiVisible, isLiveFftActive)
+                            val spectrumBins = when (
+                                DspLoopCadencePlanner.spectrumPublishAction(isUiVisible, isLiveFftActive)
                             ) {
-                                frame.displayBins36.toList()
-                            } else {
-                                state.telemetry.spectrumBins36
+                                SpectrumPublishAction.PUBLISH_LIVE -> frame.displayBins36.toList()
+                                SpectrumPublishAction.CLEAR_TO_ZERO -> ZERO_SPECTRUM_BINS
+                                SpectrumPublishAction.PRESERVE_PREVIOUS -> state.telemetry.spectrumBins36
                             }
                             val activeCompensationName = state.activeCustomHeadphoneProfile?.name
                                 ?: state.activeHeadphoneProfile.name
@@ -536,6 +540,7 @@ class OrbitAudioService : Service() {
         engineStatus = EngineStatus.IDLE,
         dspBackend = DspBackend.NONE,
         activeSessionId = 0,
+        spectrumBins36 = ZERO_SPECTRUM_BINS,
         preEqBandCount = 0,
     )
 
@@ -794,6 +799,7 @@ class OrbitAudioService : Service() {
         private const val BACKEND_RETRY_INTERVAL_MS = 3000L
         private const val STARTUP_POWER_GRACE_MS = 2500L
         private const val LIMITER_CEILING_DB = -0.5f
+        private val ZERO_SPECTRUM_BINS = List(36) { 0f }
 
         private const val ACTION_VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION"
         private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"

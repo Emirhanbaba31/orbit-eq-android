@@ -74,9 +74,10 @@ class OrbitWidgetProvider : AppWidgetProvider() {
             ACTION_WIDGET_TOGGLE_POWER -> {
                 val powerOn = OrbitEngineRepository.uiState.value.settings.powerEnabled
                 if (!powerOn) {
-                    OrbitEngineRepository.setPowerEnabled(true)
                     val started = OrbitAudioService.startBackgroundSafe(appContext)
-                    if (!started) {
+                    if (started) {
+                        OrbitEngineRepository.setPowerEnabled(true)
+                    } else {
                         val launchIntent = Intent(appContext, MainActivity::class.java).apply {
                             addFlags(
                                 Intent.FLAG_ACTIVITY_NEW_TASK or

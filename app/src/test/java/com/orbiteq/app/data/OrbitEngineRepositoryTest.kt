@@ -655,6 +655,81 @@ class OrbitEngineRepositoryTest {
     }
 
     @Test
+    fun importBackupJsonClearsManualOverrideSoImportedModeAndAppRulesTakeEffect() = runBlocking {
+        val gateway = FakeOrbitPersistenceGateway()
+        OrbitEngineRepository.initForTesting(gateway)
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        val spotify = "com.spotify.music"
+        OrbitEngineRepository.updateNowPlaying(
+            NowPlayingInfo(
+                packageName = spotify,
+                appName = "Spotify",
+                trackTitle = "Orbit Track",
+                artist = "Cosmo",
+                isPlaying = true,
+            ),
+        )
+        OrbitEngineRepository.selectModeManually(PleasureMode.ECLIPSE)
+        assertEquals(PleasureMode.ECLIPSE, OrbitEngineRepository.uiState.value.manualOverrideMode)
+        assertEquals(ModeResolutionSource.MANUAL_OVERRIDE, OrbitEngineRepository.uiState.value.modeSource)
+
+        val importedBackupJson = OrbitBackupCodec.encodeBackup(
+            OrbitSettings(
+                selectedMode = PleasureMode.HORIZON,
+                appRules = mapOf(
+                    spotify to AppRule(
+                        packageName = spotify,
+                        displayName = "Spotify",
+                        action = AppRuleAction.USE_MODE,
+                        mode = PleasureMode.GRAVITY,
+                    ),
+                ),
+            ),
+            exportedAtMs = 1_760_000_200_000L,
+        )
+
+        assertTrue(OrbitEngineRepository.importBackupJson(importedBackupJson))
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        val afterRuleImport = OrbitEngineRepository.uiState.value
+        assertNull(afterRuleImport.manualOverrideMode)
+        assertEquals(PleasureMode.GRAVITY, afterRuleImport.activeMode)
+        assertEquals(ModeResolutionSource.APP_RULE, afterRuleImport.modeSource)
+
+        // Also verify imported deviceDefaultModes & selectedMode take effect on unlisted apps when override was active
+        OrbitEngineRepository.updateNowPlaying(
+            NowPlayingInfo(
+                packageName = "com.custom.unlisted.player",
+                appName = "Unlisted Player",
+                trackTitle = "Solar Drift",
+                artist = "Cosmo",
+                isPlaying = true,
+            ),
+        )
+        OrbitEngineRepository.selectModeManually(PleasureMode.ECLIPSE)
+        assertEquals(PleasureMode.ECLIPSE, OrbitEngineRepository.uiState.value.manualOverrideMode)
+
+        val deviceAndGlobalBackupJson = OrbitBackupCodec.encodeBackup(
+            OrbitSettings(
+                selectedMode = PleasureMode.HORIZON,
+                appRules = AppRuleResolver.defaultAppRules(),
+                deviceDefaultModes = mapOf(
+                    AppRuleResolver.deviceKey(null, isSpeaker = true) to PleasureMode.HORIZON,
+                ),
+            ),
+            exportedAtMs = 1_760_000_300_000L,
+        )
+        assertTrue(OrbitEngineRepository.importBackupJson(deviceAndGlobalBackupJson))
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        val afterDeviceImport = OrbitEngineRepository.uiState.value
+        assertNull(afterDeviceImport.manualOverrideMode)
+        assertEquals(PleasureMode.HORIZON, afterDeviceImport.activeMode)
+        assertEquals(ModeResolutionSource.DEVICE_DEFAULT, afterDeviceImport.modeSource)
+    }
+
+    @Test
     fun awaitInitialSettingsLoadedWaitsForPersistedEmissionAndUpdatesUiStateSynchronously() = runBlocking {
         assertFalse(OrbitEngineRepository.isInitialSettingsLoaded())
         assertFalse(OrbitEngineRepository.awaitInitialSettingsLoaded(timeoutMs = 20L))

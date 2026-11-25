@@ -31,12 +31,15 @@ class DspEffectController(
     private var activeHandle: DspSessionHandle? = null
     private val smoother = DspGainSmoother()
 
+    @Volatile
     var currentBackend: DspBackend = DspBackend.NONE
         private set
 
+    @Volatile
     var currentSessionId: Int = 0
         private set
 
+    @Volatile
     var currentPreEqBandCount: Int = 0
         private set
 

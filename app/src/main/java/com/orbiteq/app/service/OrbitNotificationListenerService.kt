@@ -233,14 +233,18 @@ class OrbitNotificationListenerService : NotificationListenerService() {
             if (artworkKey == lastArtworkTrackKey) {
                 return
             }
+            val scope = serviceScope ?: return
             lastArtworkTrackKey = artworkKey
             artworkJob?.cancel()
-            val scope = serviceScope ?: return
             artworkJob = scope.launch(Dispatchers.Default) {
                 val scaled = downscaleArtwork(rawArtwork, MAX_ARTWORK_DIM_PX)
-                if (!isActive) return@launch
-                val shouldPublish = synchronized(artworkLock) { lastArtworkTrackKey == artworkKey }
-                if (shouldPublish) {
+                synchronized(artworkLock) {
+                    if (!isActive || lastArtworkTrackKey != artworkKey) {
+                        if (scaled != null && scaled !== rawArtwork && !scaled.isRecycled) {
+                            scaled.recycle()
+                        }
+                        return@launch
+                    }
                     OrbitEngineRepository.updateNowPlayingArtwork(scaled)
                 }
             }
@@ -252,8 +256,8 @@ class OrbitNotificationListenerService : NotificationListenerService() {
             lastArtworkTrackKey = null
             artworkJob?.cancel()
             artworkJob = null
+            OrbitEngineRepository.updateNowPlayingArtwork(null)
         }
-        OrbitEngineRepository.updateNowPlayingArtwork(null)
     }
 
     private fun downscaleArtwork(source: Bitmap, maxDim: Int): Bitmap? {
@@ -262,14 +266,16 @@ class OrbitNotificationListenerService : NotificationListenerService() {
         val srcHeight = source.height
         if (srcWidth <= 0 || srcHeight <= 0) return null
 
+        var working: Bitmap? = null
+        var result: Bitmap? = null
         return try {
-            val working = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && source.config == Bitmap.Config.HARDWARE) {
+            working = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && source.config == Bitmap.Config.HARDWARE) {
                 source.copy(Bitmap.Config.ARGB_8888, false) ?: return null
             } else {
                 source
             }
             val maxSide = maxOf(srcWidth, srcHeight)
-            if (maxSide <= maxDim) {
+            result = if (maxSide <= maxDim) {
                 if (working !== source) {
                     working
                 } else {
@@ -281,8 +287,13 @@ class OrbitNotificationListenerService : NotificationListenerService() {
                 val targetH = (srcHeight * scale).roundToInt().coerceIn(1, maxDim)
                 Bitmap.createScaledBitmap(working, targetW, targetH, true)
             }
+            result
         } catch (_: RuntimeException) {
             null
+        } finally {
+            if (working != null && working !== source && working !== result && !working.isRecycled) {
+                working.recycle()
+            }
         }
     }
 

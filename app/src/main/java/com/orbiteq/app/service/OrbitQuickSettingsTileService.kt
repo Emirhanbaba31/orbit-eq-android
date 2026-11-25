@@ -109,9 +109,10 @@ class OrbitQuickSettingsTileService : TileService() {
             )
         ) {
             TileClickDecision.START_ENGINE -> {
-                OrbitEngineRepository.setPowerEnabled(true)
                 val started = OrbitAudioService.startBackgroundSafe(applicationContext)
-                if (!started) {
+                if (started) {
+                    OrbitEngineRepository.setPowerEnabled(true)
+                } else {
                     launchMainActivityForStart()
                 }
             }

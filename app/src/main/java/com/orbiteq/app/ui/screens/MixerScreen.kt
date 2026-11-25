@@ -49,6 +49,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -91,6 +92,22 @@ import kotlin.math.roundToInt
 
 private const val MAX_PREAMP_BAR_CUT_DB = 12f
 private const val BALANCE_CENTER_SNAP_EPSILON = 0.04f
+private const val BALANCE_STEP_DIVISOR = 50f
+
+internal fun normalizeDisplayedChannelBalance(balance: Float): Float {
+    if (!balance.isFinite()) return 0f
+    val clamped = balance.coerceIn(-1f, 1f)
+    return if (abs(clamped) <= BALANCE_CENTER_SNAP_EPSILON) 0f else clamped
+}
+
+internal fun snapAndQuantizeChannelBalance(raw: Float): Float {
+    if (!raw.isFinite()) return 0f
+    val clamped = raw.coerceIn(-1f, 1f)
+    if (abs(clamped) <= BALANCE_CENTER_SNAP_EPSILON) return 0f
+    val quantized = ((clamped * BALANCE_STEP_DIVISOR).roundToInt() / BALANCE_STEP_DIVISOR)
+        .coerceIn(-1f, 1f)
+    return if (abs(quantized) <= BALANCE_CENTER_SNAP_EPSILON) 0f else quantized
+}
 
 @Composable
 fun MixerScreen(
@@ -610,9 +627,14 @@ private fun ChannelBalanceCard(
 ) {
     val colors = LocalOrbitColors.current
     val haptic = LocalHapticFeedback.current
-    val safeBalance = if (channelBalance.isFinite()) channelBalance.coerceIn(-1f, 1f) else 0f
-    val isCentered = abs(safeBalance) < BALANCE_CENTER_SNAP_EPSILON
-    val displayBalance = if (isCentered) 0f else safeBalance
+    val canonicalBalance = normalizeDisplayedChannelBalance(channelBalance)
+    var dragBalance by remember { mutableStateOf<Float?>(null) }
+    var lastEmittedBalance by remember { mutableFloatStateOf(canonicalBalance) }
+    if (dragBalance == null) {
+        lastEmittedBalance = canonicalBalance
+    }
+    val displayBalance = dragBalance ?: canonicalBalance
+    val isCentered = abs(displayBalance) <= BALANCE_CENTER_SNAP_EPSILON
     val pct = (abs(displayBalance) * 100f).roundToInt().coerceIn(0, 100)
     val readoutText = when {
         pct == 0 -> stringResource(R.string.dsp_balance_zero)
@@ -644,6 +666,8 @@ private fun ChannelBalanceCard(
             Spacer(modifier = Modifier.width(8.dp))
             OutlinedButton(
                 onClick = {
+                    dragBalance = null
+                    lastEmittedBalance = 0f
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     onChannelBalanceChange(0f)
                 },
@@ -711,17 +735,18 @@ private fun ChannelBalanceCard(
         Slider(
             value = displayBalance,
             onValueChange = { raw ->
-                val snapped = if (abs(raw) <= BALANCE_CENTER_SNAP_EPSILON) {
-                    0f
-                } else {
-                    raw.coerceIn(-1f, 1f)
-                }
+                val snapped = snapAndQuantizeChannelBalance(raw)
                 if (snapped == 0f && displayBalance != 0f) {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 }
-                if (snapped != displayBalance) {
+                dragBalance = snapped
+                if (abs(snapped - lastEmittedBalance) >= 0.005f) {
+                    lastEmittedBalance = snapped
                     onChannelBalanceChange(snapped)
                 }
+            },
+            onValueChangeFinished = {
+                dragBalance = null
             },
             valueRange = -1.0f..1.0f,
             modifier = Modifier
