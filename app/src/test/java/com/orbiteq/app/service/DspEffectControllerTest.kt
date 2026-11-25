@@ -322,21 +322,6 @@ class DspEffectControllerTest {
     }
 
     @Test
-    fun legacyMbcBooleanOverloadDelegatesToSubtleAndOff() {
-        val factory = FakeDspBackendFactory()
-        val controller = DspEffectController(factory)
-        controller.attach(50)
-        val handle = factory.createdHandles.single()
-
-        val frame = sampleFrame()
-        controller.apply(frame = frame, mbcEnabled = true, active = true)
-        controller.apply(frame = frame, mbcEnabled = false, active = true)
-
-        assertEquals(MbcMode.SUBTLE, handle.applyCalls[0].mbcMode)
-        assertEquals(MbcMode.OFF, handle.applyCalls[1].mbcMode)
-    }
-
-    @Test
     fun dirtyTrackerSuppressesIdenticalFramesAndTriggersOnlyOnThresholdChanges() {
         val tracker = DspDirtyTracker(preEqBandCount = 31)
         val pre31 = FloatArray(31) { 1.0f }

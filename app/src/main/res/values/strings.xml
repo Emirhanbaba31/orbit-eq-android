@@ -168,4 +168,83 @@
     <string name="rules_edit_title_fmt">Rule · %1$s</string>
     <string name="rules_remove_action">Remove rule</string>
     <string name="rules_mode_cd_fmt">Edit rule for %1$s</string>
+
+    <!-- v2 Notification, Quick Settings Tile & Home Widget -->
+    <string name="notif_action_next_mode">Next Mode</string>
+    <string name="qs_tile_label">ORBIT EQ</string>
+    <string name="qs_tile_sub_active_fmt">%1$s · Active</string>
+    <string name="qs_tile_sub_bypass">A/B Bypass</string>
+    <string name="qs_tile_sub_auto_bypass">Auto Bypass</string>
+    <string name="qs_tile_sub_off">Off</string>
+    <string name="widget_label">ORBIT EQ Control</string>
+    <string name="widget_description">Quick power, A/B bypass and mode switching for ORBIT EQ</string>
+    <string name="widget_status_standby">STANDBY</string>
+    <string name="widget_status_live_fft">AUTO FFT</string>
+    <string name="widget_status_fallback">FALLBACK</string>
+    <string name="widget_status_bypassed">BYPASSED</string>
+    <string name="widget_status_active">ACTIVE</string>
+    <string name="widget_btn_power_on">PWR ON</string>
+    <string name="widget_btn_power_off">PWR OFF</string>
+    <string name="widget_btn_ab">A/B</string>
+    <string name="widget_btn_ab_auto">AUTO</string>
+    <string name="widget_btn_next_mode">MODE +</string>
+    <string name="widget_cd_power">Toggle ORBIT EQ power</string>
+    <string name="widget_cd_bypass">Toggle A/B bypass</string>
+    <string name="widget_cd_next_mode">Switch to next Pleasure Mode</string>
+
+    <!-- v2 Studio & Mixer DSP Controls -->
+    <string name="hud_hires_31band_badge">31-BAND</string>
+    <string name="telemetry_backend_dp_31">DynamicsProcessing · 31-Band PreEQ</string>
+    <string name="dsp_true_headroom_title">True Headroom (0.0 dB)</string>
+    <string name="dsp_true_headroom_desc">Strict zero-clip ceiling without 1.5 dB allowance</string>
+    <string name="dsp_subsonic_title">Subsonic Filter (20 Hz)</string>
+    <string name="dsp_subsonic_desc">Protects drivers from inaudible ultra-low rumble</string>
+    <string name="mbc_mode_off">OFF</string>
+    <string name="mbc_mode_subtle">SUBTLE</string>
+    <string name="mbc_mode_punchy">PUNCHY</string>
+    <string name="dsp_mbc_subtle">MBC · SUBTLE</string>
+    <string name="dsp_mbc_punchy">MBC · PUNCHY</string>
+    <string name="dsp_balance_title">CHANNEL BALANCE</string>
+    <string name="dsp_balance_desc">Attenuates opposite channel without digital boost</string>
+    <string name="dsp_balance_center">Center</string>
+    <string name="dsp_balance_reset">Center</string>
+    <string name="dsp_balance_left_fmt">L %d%%</string>
+    <string name="dsp_balance_right_fmt">R %d%%</string>
+    <string name="dsp_balance_zero">0%</string>
+
+    <!-- v2 AutoEQ Import, Backup & Diagnostics -->
+    <string name="autoeq_import_btn">Import AutoEQ</string>
+    <string name="autoeq_custom_badge">31-BAND · %1$s</string>
+    <string name="autoeq_delete_cd">Delete headphone profile</string>
+    <string name="autoeq_dialog_title">Import 31-Band AutoEQ</string>
+    <string name="autoeq_tab_catalog">Catalog</string>
+    <string name="autoeq_tab_file">.txt File</string>
+    <string name="autoeq_tab_paste">Paste Text</string>
+    <string name="autoeq_catalog_hint">Tap a Harman-calibrated 31-band profile to apply it to the active device.</string>
+    <string name="autoeq_file_hint">Select a Wavelet, AutoEQ, or Peace GraphicEQ (.txt) file from storage.</string>
+    <string name="autoeq_file_pick_btn">Choose .txt File</string>
+    <string name="autoeq_name_label">Profile Name</string>
+    <string name="autoeq_name_hint">e.g. Soundcore Life Q30</string>
+    <string name="autoeq_text_label">GraphicEQ / CSV Curve</string>
+    <string name="autoeq_text_hint">GraphicEQ: 20 -2.0; 100 -4.0; ...</string>
+    <string name="autoeq_import_save">Import &amp; Apply</string>
+    <string name="autoeq_import_cancel">Cancel</string>
+    <string name="autoeq_error_empty_name">Enter a profile name.</string>
+    <string name="autoeq_error_invalid_format">Invalid AutoEQ curve. Provide at least 3 frequency/gain pairs.</string>
+    <string name="autoeq_import_success_fmt">Imported %1$s (31-band)</string>
+    <string name="autoeq_file_read_error">Could not read the selected AutoEQ file.</string>
+    <string name="autoeq_catalog_selected_fmt">Applied %1$s</string>
+    <string name="backup_section_title">BACKUP &amp; DIAGNOSTICS</string>
+    <string name="backup_section_desc">Export or restore tuning, custom AutoEQ profiles, and app rules as JSON.</string>
+    <string name="backup_export_btn">Export JSON</string>
+    <string name="backup_import_btn">Import JSON</string>
+    <string name="diagnostics_copy_btn">Copy Diagnostics</string>
+    <string name="diagnostics_share_btn">Share</string>
+    <string name="backup_export_success">Settings backup exported as JSON.</string>
+    <string name="backup_export_error">Could not save backup file.</string>
+    <string name="backup_import_success">Backup imported and merged cleanly.</string>
+    <string name="backup_import_error">Invalid or incompatible backup JSON file.</string>
+    <string name="diagnostics_copied_msg">Diagnostics report copied to clipboard.</string>
+    <string name="diagnostics_share_subject">ORBIT EQ v2.0 Diagnostics</string>
+    <string name="banner_dismiss_cd">Dismiss message</string>
 </resources>

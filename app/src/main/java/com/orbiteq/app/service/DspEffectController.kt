@@ -72,16 +72,6 @@ class DspEffectController(
         }
     }
 
-    // Temporary compatibility bridge until OrbitAudioService migrates to MbcMode in Task 5.
-    @Synchronized
-    fun apply(frame: EqEngineFrame, mbcEnabled: Boolean, active: Boolean) {
-        apply(
-            frame = frame,
-            mbcMode = if (mbcEnabled) MbcMode.SUBTLE else MbcMode.OFF,
-            active = active,
-        )
-    }
-
     @Synchronized
     fun release() {
         val existing = activeHandle

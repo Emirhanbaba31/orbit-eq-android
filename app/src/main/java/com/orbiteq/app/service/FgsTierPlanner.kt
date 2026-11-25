@@ -13,6 +13,7 @@ object FgsTierPlanner {
     internal const val ACTION_START_BACKGROUND_SAFE = "com.orbiteq.app.action.START_BACKGROUND_SAFE"
     internal const val ACTION_PROMOTE_TO_FULL = "com.orbiteq.app.action.PROMOTE_TO_FULL"
     internal const val ACTION_TOGGLE_BYPASS = "com.orbiteq.app.action.TOGGLE_BYPASS"
+    internal const val ACTION_NEXT_MODE = "com.orbiteq.app.action.NEXT_MODE"
     internal const val ACTION_STOP_ENGINE = "com.orbiteq.app.action.STOP_ENGINE"
     internal const val ACTION_UPDATE_SESSION = "com.orbiteq.app.action.UPDATE_SESSION"
 

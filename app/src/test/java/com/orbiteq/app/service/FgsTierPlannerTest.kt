@@ -68,4 +68,42 @@ class FgsTierPlannerTest {
         assertTrue(FgsTierPlanner.isForegroundEligibleAction(FgsTierPlanner.ACTION_START_FOREGROUND_FULL))
         assertTrue(FgsTierPlanner.isForegroundEligibleAction(FgsTierPlanner.ACTION_PROMOTE_TO_FULL))
     }
+
+    @Test
+    fun nextModeActionIsNotForegroundEligibleAndDoesNotRePromote() {
+        assertEquals("com.orbiteq.app.action.NEXT_MODE", FgsTierPlanner.ACTION_NEXT_MODE)
+        assertFalse(FgsTierPlanner.isForegroundEligibleAction(FgsTierPlanner.ACTION_NEXT_MODE))
+        assertFalse(
+            FgsTierPlanner.shouldPromoteForeground(
+                isForegroundPromoted = true,
+                action = FgsTierPlanner.ACTION_NEXT_MODE,
+            ),
+        )
+        assertTrue(
+            FgsTierPlanner.shouldPromoteForeground(
+                isForegroundPromoted = false,
+                action = FgsTierPlanner.ACTION_NEXT_MODE,
+            ),
+        )
+    }
+
+    @Test
+    fun tileActionPlannerDecidesStartClearBypassOrStopFromState() {
+        assertEquals(
+            TileClickDecision.START_ENGINE,
+            TileActionPlanner.decideAction(powerEnabled = false, manuallyBypassed = false),
+        )
+        assertEquals(
+            TileClickDecision.START_ENGINE,
+            TileActionPlanner.decideAction(powerEnabled = false, manuallyBypassed = true),
+        )
+        assertEquals(
+            TileClickDecision.CLEAR_BYPASS,
+            TileActionPlanner.decideAction(powerEnabled = true, manuallyBypassed = true),
+        )
+        assertEquals(
+            TileClickDecision.STOP_ENGINE,
+            TileActionPlanner.decideAction(powerEnabled = true, manuallyBypassed = false),
+        )
+    }
 }

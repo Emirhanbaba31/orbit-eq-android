@@ -168,4 +168,83 @@
     <string name="rules_edit_title_fmt">Kural · %1$s</string>
     <string name="rules_remove_action">Kuralı kaldır</string>
     <string name="rules_mode_cd_fmt">%1$s kuralını düzenle</string>
+
+    <!-- v2 Bildirim, Hızlı Ayarlar Karesi ve Ana Ekran Widget -->
+    <string name="notif_action_next_mode">Sonraki Mod</string>
+    <string name="qs_tile_label">ORBIT EQ</string>
+    <string name="qs_tile_sub_active_fmt">%1$s · Aktif</string>
+    <string name="qs_tile_sub_bypass">A/B Bypass</string>
+    <string name="qs_tile_sub_auto_bypass">Oto Bypass</string>
+    <string name="qs_tile_sub_off">Kapalı</string>
+    <string name="widget_label">ORBIT EQ Kontrol</string>
+    <string name="widget_description">ORBIT EQ için hızlı güç, A/B bypass ve mod değiştirme</string>
+    <string name="widget_status_standby">BEKLEMEDE</string>
+    <string name="widget_status_live_fft">AUTO FFT</string>
+    <string name="widget_status_fallback">FALLBACK</string>
+    <string name="widget_status_bypassed">BYPASS</string>
+    <string name="widget_status_active">AKTİF</string>
+    <string name="widget_btn_power_on">GÜÇ AÇIK</string>
+    <string name="widget_btn_power_off">KAPALI</string>
+    <string name="widget_btn_ab">A/B</string>
+    <string name="widget_btn_ab_auto">AUTO</string>
+    <string name="widget_btn_next_mode">MOD +</string>
+    <string name="widget_cd_power">ORBIT EQ gücünü aç veya kapat</string>
+    <string name="widget_cd_bypass">A/B bypass aç veya kapat</string>
+    <string name="widget_cd_next_mode">Sonraki Haz Moduna geç</string>
+
+    <!-- v2 Studio ve Mikser DSP Kontrolleri -->
+    <string name="hud_hires_31band_badge">31-BANT</string>
+    <string name="telemetry_backend_dp_31">DynamicsProcessing · 31-Bant PreEQ</string>
+    <string name="dsp_true_headroom_title">True Headroom (0.0 dB)</string>
+    <string name="dsp_true_headroom_desc">1.5 dB tolerans olmadan sıfır kırpma koruması</string>
+    <string name="dsp_subsonic_title">Subsonic Filtre (20 Hz)</string>
+    <string name="dsp_subsonic_desc">Sürücüleri duyulmayan 20–25 Hz yükünden korur</string>
+    <string name="mbc_mode_off">KAPALI</string>
+    <string name="mbc_mode_subtle">DOĞAL</string>
+    <string name="mbc_mode_punchy">PUNCH</string>
+    <string name="dsp_mbc_subtle">MBC · DOĞAL</string>
+    <string name="dsp_mbc_punchy">MBC · PUNCH</string>
+    <string name="dsp_balance_title">KANAL DENGESİ</string>
+    <string name="dsp_balance_desc">Dijital kazanç artırmadan karşı kanalı dengeler</string>
+    <string name="dsp_balance_center">Orta</string>
+    <string name="dsp_balance_reset">Ortala</string>
+    <string name="dsp_balance_left_fmt">L %d%%</string>
+    <string name="dsp_balance_right_fmt">R %d%%</string>
+    <string name="dsp_balance_zero">0%</string>
+
+    <!-- v2 AutoEQ İçe Aktarma, Yedekleme ve Tanılama -->
+    <string name="autoeq_import_btn">AutoEQ İçe Aktar</string>
+    <string name="autoeq_custom_badge">31-BANT · %1$s</string>
+    <string name="autoeq_delete_cd">Kulaklık profilini sil</string>
+    <string name="autoeq_dialog_title">31-Bant AutoEQ İçe Aktar</string>
+    <string name="autoeq_tab_catalog">Katalog</string>
+    <string name="autoeq_tab_file">.txt Dosyası</string>
+    <string name="autoeq_tab_paste">Metin Yapıştır</string>
+    <string name="autoeq_catalog_hint">Aktif cihaza uygulamak için Harman kalibrasyonlu 31-bant profilden birine dokunun.</string>
+    <string name="autoeq_file_hint">Cihazınızdan bir Wavelet, AutoEQ veya Peace GraphicEQ (.txt) dosyası seçin.</string>
+    <string name="autoeq_file_pick_btn">.txt Dosyası Seç</string>
+    <string name="autoeq_name_label">Profil Adı</string>
+    <string name="autoeq_name_hint">örn. Soundcore Life Q30</string>
+    <string name="autoeq_text_label">GraphicEQ / CSV Eğrisi</string>
+    <string name="autoeq_text_hint">GraphicEQ: 20 -2.0; 100 -4.0; ...</string>
+    <string name="autoeq_import_save">İçe Aktar ve Uygula</string>
+    <string name="autoeq_import_cancel">İptal</string>
+    <string name="autoeq_error_empty_name">Bir profil adı girin.</string>
+    <string name="autoeq_error_invalid_format">Geçersiz AutoEQ eğrisi. En az 3 frekans/kazanç çifti girin.</string>
+    <string name="autoeq_import_success_fmt">%1$s içe aktarıldı (31-bant)</string>
+    <string name="autoeq_file_read_error">Seçilen AutoEQ dosyası okunamadı.</string>
+    <string name="autoeq_catalog_selected_fmt">%1$s uygulandı</string>
+    <string name="backup_section_title">YEDEKLEME VE TANILAMA</string>
+    <string name="backup_section_desc">Ayarları, özel AutoEQ profillerini ve uygulama kurallarını JSON olarak yedekleyin.</string>
+    <string name="backup_export_btn">JSON Dışa Aktar</string>
+    <string name="backup_import_btn">JSON İçe Aktar</string>
+    <string name="diagnostics_copy_btn">Tanılama Kopyala</string>
+    <string name="diagnostics_share_btn">Paylaş</string>
+    <string name="backup_export_success">Ayar yedeği JSON olarak dışa aktarıldı.</string>
+    <string name="backup_export_error">Yedek dosyası kaydedilemedi.</string>
+    <string name="backup_import_success">Yedek başarıyla içe aktarıldı ve birleştirildi.</string>
+    <string name="backup_import_error">Geçersiz veya uyumsuz yedek JSON dosyası.</string>
+    <string name="diagnostics_copied_msg">Tanılama raporu panoya kopyalandı.</string>
+    <string name="diagnostics_share_subject">ORBIT EQ v2.0 Tanılama</string>
+    <string name="banner_dismiss_cd">Mesajı kapat</string>
 </resources>

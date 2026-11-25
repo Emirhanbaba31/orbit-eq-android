@@ -2,6 +2,7 @@ package com.orbiteq.app.service
 
 import android.content.ComponentName
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
@@ -12,15 +13,20 @@ import android.os.Looper
 import android.service.notification.NotificationListenerService
 import com.orbiteq.app.data.OrbitEngineRepository
 import com.orbiteq.app.data.OrbitPreferencesStore
+import com.orbiteq.app.dsp.AppRuleResolver
 import com.orbiteq.app.model.NowPlayingInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
 
 class OrbitNotificationListenerService : NotificationListenerService() {
 
@@ -30,9 +36,12 @@ class OrbitNotificationListenerService : NotificationListenerService() {
     private var serviceScope: CoroutineScope? = null
     private val appLabelCache = ConcurrentHashMap<String, String>()
     private val controllerLock = Any()
+    private val artworkLock = Any()
     private val trackedControllers = mutableMapOf<MediaController, MediaController.Callback>()
     private var currentExternalControllers: List<MediaController> = emptyList()
     private var sessionsListener: MediaSessionManager.OnActiveSessionsChangedListener? = null
+    private var lastArtworkTrackKey: String? = null
+    private var artworkJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -50,11 +59,13 @@ class OrbitNotificationListenerService : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         unregisterAllListeners()
+        clearArtworkState()
         super.onListenerDisconnected()
     }
 
     override fun onDestroy() {
         unregisterAllListeners()
+        clearArtworkState()
         serviceScope?.cancel()
         serviceScope = null
         super.onDestroy()
@@ -146,6 +157,7 @@ class OrbitNotificationListenerService : NotificationListenerService() {
     private fun publishNowPlayingFromControllers(controllers: List<MediaController>) {
         val selected = selectPrimaryController(controllers)
         if (selected == null) {
+            clearArtworkState()
             OrbitEngineRepository.updateNowPlaying(NowPlayingInfo())
             return
         }
@@ -185,9 +197,92 @@ class OrbitNotificationListenerService : NotificationListenerService() {
             isPlaying = isPlaying,
         )
         OrbitEngineRepository.updateNowPlaying(info)
+        updateNowPlayingArtworkIfNeeded(pkg = pkg, title = title, artist = artist, metadata = metadata)
 
         if (isPlaying && !OrbitAudioService.isRunning) {
             maybeStartBackgroundAudioService()
+        }
+    }
+
+    private fun updateNowPlayingArtworkIfNeeded(
+        pkg: String,
+        title: String,
+        artist: String,
+        metadata: MediaMetadata?,
+    ) {
+        val rawArtwork = try {
+            metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+                ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
+                ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+        } catch (_: RuntimeException) {
+            null
+        }
+
+        if (rawArtwork == null || rawArtwork.isRecycled) {
+            clearArtworkState()
+            return
+        }
+
+        val artworkKey = if (title.isNotEmpty()) {
+            AppRuleResolver.trackKey(pkg, title)
+        } else {
+            "${pkg.trim().lowercase(Locale.ROOT)}||${artist.trim().lowercase(Locale.ROOT)}"
+        }
+
+        synchronized(artworkLock) {
+            if (artworkKey == lastArtworkTrackKey) {
+                return
+            }
+            lastArtworkTrackKey = artworkKey
+            artworkJob?.cancel()
+            val scope = serviceScope ?: return
+            artworkJob = scope.launch(Dispatchers.Default) {
+                val scaled = downscaleArtwork(rawArtwork, MAX_ARTWORK_DIM_PX)
+                if (!isActive) return@launch
+                val shouldPublish = synchronized(artworkLock) { lastArtworkTrackKey == artworkKey }
+                if (shouldPublish) {
+                    OrbitEngineRepository.updateNowPlayingArtwork(scaled)
+                }
+            }
+        }
+    }
+
+    private fun clearArtworkState() {
+        synchronized(artworkLock) {
+            lastArtworkTrackKey = null
+            artworkJob?.cancel()
+            artworkJob = null
+        }
+        OrbitEngineRepository.updateNowPlayingArtwork(null)
+    }
+
+    private fun downscaleArtwork(source: Bitmap, maxDim: Int): Bitmap? {
+        if (source.isRecycled) return null
+        val srcWidth = source.width
+        val srcHeight = source.height
+        if (srcWidth <= 0 || srcHeight <= 0) return null
+
+        return try {
+            val working = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && source.config == Bitmap.Config.HARDWARE) {
+                source.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+            } else {
+                source
+            }
+            val maxSide = maxOf(srcWidth, srcHeight)
+            if (maxSide <= maxDim) {
+                if (working !== source) {
+                    working
+                } else {
+                    working.copy(working.config ?: Bitmap.Config.ARGB_8888, false) ?: working
+                }
+            } else {
+                val scale = maxDim.toFloat() / maxSide.toFloat()
+                val targetW = (srcWidth * scale).roundToInt().coerceIn(1, maxDim)
+                val targetH = (srcHeight * scale).roundToInt().coerceIn(1, maxDim)
+                Bitmap.createScaledBitmap(working, targetW, targetH, true)
+            }
+        } catch (_: RuntimeException) {
+            null
         }
     }
 
@@ -256,5 +351,6 @@ class OrbitNotificationListenerService : NotificationListenerService() {
 
     private companion object {
         const val PREFS_LOAD_TIMEOUT_MS = 1200L
+        const val MAX_ARTWORK_DIM_PX = 128
     }
 }

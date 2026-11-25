@@ -27,12 +27,16 @@ import androidx.core.content.ContextCompat
 import com.orbiteq.app.R
 import com.orbiteq.app.data.OrbitEngineRepository
 import com.orbiteq.app.dsp.AdaptiveEqEngine
-import com.orbiteq.app.dsp.PleasureProfiles
+import com.orbiteq.app.dsp.AppRuleResolver
 import com.orbiteq.app.model.ConnectedOutputDevice
+import com.orbiteq.app.model.CustomHeadphoneProfile
 import com.orbiteq.app.model.DspBackend
 import com.orbiteq.app.model.EngineStatus
+import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.LiveAudioTelemetry
+import com.orbiteq.app.model.OrbitSettings
 import com.orbiteq.app.model.OrbitUiState
+import com.orbiteq.app.model.PleasureMode
 import com.orbiteq.app.model.SessionAttachmentMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -42,10 +46,13 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 
 class OrbitAudioService : Service() {
 
@@ -60,8 +67,21 @@ class OrbitAudioService : Service() {
     private lateinit var audioManager: AudioManager
     private lateinit var notificationManager: NotificationManager
 
+    private data class ObservedServiceState(
+        val settings: OrbitSettings,
+        val activeMode: PleasureMode,
+        val activeHeadphoneProfile: HeadphoneProfile,
+        val activeCustomHeadphoneProfile: CustomHeadphoneProfile?,
+        val autoBypassedByRule: Boolean,
+        val isPlaying: Boolean,
+        val trackTitle: String,
+        val artist: String,
+        val connectedDevice: ConnectedOutputDevice,
+    )
+
     private var dspLoopJob: Job? = null
     private var lastLaunchedDspJob: Job? = null
+    private var stateObserverJob: Job? = null
     private var deviceCallback: AudioDeviceCallback? = null
     private var dynamicReceiver: BroadcastReceiver? = null
 
@@ -92,6 +112,32 @@ class OrbitAudioService : Service() {
         registerAudioDeviceMonitor()
         registerDynamicAudioReceiver()
         refreshConnectedOutputDevice(reattachDsp = false)
+        startStateObserver()
+    }
+
+    private fun startStateObserver() {
+        stateObserverJob?.cancel()
+        stateObserverJob = serviceScope.launch {
+            OrbitEngineRepository.uiState
+                .map { state ->
+                    ObservedServiceState(
+                        settings = state.settings,
+                        activeMode = state.activeMode,
+                        activeHeadphoneProfile = state.activeHeadphoneProfile,
+                        activeCustomHeadphoneProfile = state.activeCustomHeadphoneProfile,
+                        autoBypassedByRule = state.autoBypassedByRule,
+                        isPlaying = state.nowPlaying.isPlaying,
+                        trackTitle = state.nowPlaying.trackTitle,
+                        artist = state.nowPlaying.artist,
+                        connectedDevice = state.connectedDevice,
+                    )
+                }
+                .distinctUntilChanged()
+                .collect {
+                    wakeSignal.trySend(Unit)
+                    OrbitWidgetUpdater.requestUpdate(applicationContext)
+                }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -125,6 +171,10 @@ class OrbitAudioService : Service() {
             ACTION_TOGGLE_BYPASS -> {
                 val bypassed = OrbitEngineRepository.uiState.value.settings.bypassed
                 OrbitEngineRepository.setBypassed(!bypassed)
+            }
+
+            ACTION_NEXT_MODE -> {
+                OrbitEngineRepository.cycleNextMode()
             }
 
             ACTION_START_BACKGROUND_SAFE,
@@ -170,6 +220,8 @@ class OrbitAudioService : Service() {
         isStopping = true
         isRunning = false
         isForegroundPromoted = false
+        stateObserverJob?.cancel()
+        stateObserverJob = null
         dspLoopJob?.cancel()
         dspLoopJob = null
 
@@ -180,6 +232,7 @@ class OrbitAudioService : Service() {
         dspController.release()
 
         OrbitEngineRepository.updateTelemetry(idleTelemetry())
+        OrbitWidgetUpdater.requestUpdate(applicationContext)
 
         serviceScope.cancel()
         super.onDestroy()
@@ -246,6 +299,7 @@ class OrbitAudioService : Service() {
             var lastVisualizerSessionId: Int? = null
             var lastBackendAttachAttemptMs = 0L
             var lastVisualizerAttachAttemptMs = 0L
+            var lastWidgetStatus: EngineStatus? = null
             val loopStartedAtMs = SystemClock.elapsedRealtime()
 
             try {
@@ -255,35 +309,57 @@ class OrbitAudioService : Service() {
                     val state = OrbitEngineRepository.uiState.value
                     val powerOn = state.settings.powerEnabled
                     val effectiveBypass = state.settings.bypassed || state.autoBypassedByRule
+                    val isUiVisible = OrbitEngineRepository.isUiVisible
+                    val pkg = state.nowPlaying.packageName?.trim().orEmpty()
+                    val title = state.nowPlaying.trackTitle.trim()
+                    val trackKey = if (pkg.isNotEmpty() && title.isNotEmpty()) {
+                        AppRuleResolver.trackKey(pkg, title)
+                    } else {
+                        null
+                    }
+
+                    var isLiveFftActive = false
+                    var hasNonZeroAdaptive = false
 
                     if (!powerOn) {
                         if (loopStartMs - loopStartedAtMs >= STARTUP_POWER_GRACE_MS) {
                             stopServiceCleanly()
                             break
                         }
+                        val idleFrame = adaptiveEngine.processFrame(
+                            fftBytes = null,
+                            nowMs = loopStartMs,
+                            isMediaPlaying = false,
+                            powerEnabled = false,
+                            bypassed = true,
+                            mode = state.activeMode,
+                            intensityPercent = state.settings.intensityPercent,
+                            speed = state.settings.responseSpeed,
+                            bassMacroDb = state.settings.bassMacroDb,
+                            airMacroDb = state.settings.airMacroDb,
+                            dynamicLoudness = state.settings.dynamicLoudness,
+                            volumeRatio = currentVolumeRatio,
+                            headphoneProfile = state.activeHeadphoneProfile,
+                            manualTrimsDb = state.settings.manualTrimsDb,
+                            fftCaptureAvailable = false,
+                            sampleRateHz = visualizerController.sampleRateHz,
+                            customHeadphoneProfile = state.activeCustomHeadphoneProfile,
+                            subsonicFilterEnabled = state.settings.subsonicFilterEnabled,
+                            trueHeadroomMode = state.settings.trueHeadroomMode,
+                            channelBalance = state.settings.channelBalance,
+                            trackKey = trackKey,
+                        )
                         dspController.apply(
-                            frame = adaptiveEngine.processFrame(
-                                fftBytes = null,
-                                nowMs = loopStartMs,
-                                isMediaPlaying = false,
-                                powerEnabled = false,
-                                bypassed = true,
-                                mode = state.activeMode,
-                                intensityPercent = state.settings.intensityPercent,
-                                speed = state.settings.responseSpeed,
-                                bassMacroDb = state.settings.bassMacroDb,
-                                airMacroDb = state.settings.airMacroDb,
-                                dynamicLoudness = state.settings.dynamicLoudness,
-                                volumeRatio = currentVolumeRatio,
-                                headphoneProfile = state.activeHeadphoneProfile,
-                                manualTrimsDb = state.settings.manualTrimsDb,
-                                fftCaptureAvailable = false,
-                            ),
-                            mbcEnabled = state.settings.mbcEnabled,
+                            frame = idleFrame,
+                            mbcMode = state.settings.mbcMode,
                             active = false,
                         )
                         visualizerController.stop()
                         lastVisualizerSessionId = null
+                        if (idleFrame.engineStatus != lastWidgetStatus) {
+                            lastWidgetStatus = idleFrame.engineStatus
+                            OrbitWidgetUpdater.requestUpdate(applicationContext)
+                        }
                     } else {
                         val externalSession = AudioSessionRegistry.resolveActiveSessionId(
                             preferredPackage = state.nowPlaying.packageName,
@@ -355,36 +431,69 @@ class OrbitAudioService : Service() {
                             headphoneProfile = state.activeHeadphoneProfile,
                             manualTrimsDb = state.settings.manualTrimsDb,
                             fftCaptureAvailable = fftCaptureAvailable,
+                            sampleRateHz = visualizerController.sampleRateHz,
+                            customHeadphoneProfile = state.activeCustomHeadphoneProfile,
+                            subsonicFilterEnabled = state.settings.subsonicFilterEnabled,
+                            trueHeadroomMode = state.settings.trueHeadroomMode,
+                            channelBalance = state.settings.channelBalance,
+                            trackKey = trackKey,
                         )
 
                         dspController.apply(
                             frame = frame,
-                            mbcEnabled = state.settings.mbcEnabled,
+                            mbcMode = state.settings.mbcMode,
                             active = !effectiveBypass,
                         )
 
+                        isLiveFftActive = frame.engineStatus == EngineStatus.AUTO_FFT_LOCKED && fftCaptureAvailable
+                        hasNonZeroAdaptive = frame.adaptiveDeltaDb.any { abs(it) > 0.05f }
+
                         if (isActive && !isStopping) {
+                            val spectrumBins = if (
+                                DspLoopCadencePlanner.shouldPublishSpectrumBins(isUiVisible, isLiveFftActive)
+                            ) {
+                                frame.displayBins36.toList()
+                            } else {
+                                state.telemetry.spectrumBins36
+                            }
+                            val activeCompensationName = state.activeCustomHeadphoneProfile?.name
+                                ?: state.activeHeadphoneProfile.name
+
                             OrbitEngineRepository.updateTelemetry(
                                 LiveAudioTelemetry(
                                     engineStatus = frame.engineStatus,
                                     dspBackend = dspController.currentBackend,
                                     activeSessionId = dspController.currentSessionId,
                                     sampleRateHz = visualizerController.sampleRateHz,
-                                    spectrumBins36 = frame.displayBins36.toList(),
+                                    spectrumBins36 = spectrumBins,
                                     liveEqCurveDb = frame.totalEqDb.toList(),
                                     adaptiveDeltaDb = frame.adaptiveDeltaDb.toList(),
                                     preampAttenuationDb = frame.inputGainDb,
                                     loudnessBoostDb = frame.loudnessBoostDb,
                                     limiterCeilingDb = LIMITER_CEILING_DB,
                                     dominantSpectralTag = frame.spectralTag,
+                                    preEqBandCount = dspController.currentPreEqBandCount,
+                                    activeCompensationName = activeCompensationName,
                                 ),
                             )
 
                             updateNotificationIfChanged(state, frame.engineStatus)
+
+                            if (frame.engineStatus != lastWidgetStatus) {
+                                lastWidgetStatus = frame.engineStatus
+                                OrbitWidgetUpdater.requestUpdate(applicationContext)
+                            }
                         }
                     }
 
-                    withTimeoutOrNull(DSP_LOOP_INTERVAL_MS) {
+                    val intervalMs = DspLoopCadencePlanner.computeIntervalMs(
+                        isMediaPlaying = powerOn && state.nowPlaying.isPlaying,
+                        isLiveFftActive = isLiveFftActive,
+                        isUiVisible = isUiVisible,
+                        isRampActive = dspController.isRampActive,
+                        hasNonZeroAdaptiveDelta = hasNonZeroAdaptive,
+                    )
+                    withTimeoutOrNull(intervalMs) {
                         wakeSignal.receive()
                     }
                 }
@@ -396,6 +505,9 @@ class OrbitAudioService : Service() {
                 dspController.release()
                 if (isStopping || !isRunning) {
                     OrbitEngineRepository.updateTelemetry(idleTelemetry())
+                    if (lastWidgetStatus != EngineStatus.IDLE) {
+                        OrbitWidgetUpdater.requestUpdate(applicationContext)
+                    }
                 }
             }
         }
@@ -424,17 +536,18 @@ class OrbitAudioService : Service() {
         engineStatus = EngineStatus.IDLE,
         dspBackend = DspBackend.NONE,
         activeSessionId = 0,
+        preEqBandCount = 0,
     )
 
     private fun registerAudioDeviceMonitor() {
         val callback = object : AudioDeviceCallback() {
             override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
-                val relevant = addedDevices.any { isOutputRouteDevice(it) }
+                val relevant = addedDevices.any { it.isSink && AudioRouteResolver.isRelevantOutputType(it.type) }
                 refreshConnectedOutputDevice(reattachDsp = relevant)
             }
 
             override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
-                val relevant = removedDevices.any { isOutputRouteDevice(it) }
+                val relevant = removedDevices.any { it.isSink && AudioRouteResolver.isRelevantOutputType(it.type) }
                 refreshConnectedOutputDevice(reattachDsp = relevant)
             }
         }
@@ -514,71 +627,17 @@ class OrbitAudioService : Service() {
         } catch (_: RuntimeException) {
             emptyArray()
         }
-        val detected = selectConnectedOutputDevice(outputs)
+        val detected = AudioRouteResolver.resolveFromSystem(
+            devices = outputs,
+            defaultBluetoothName = getString(R.string.device_bluetooth_default),
+            defaultWiredName = getString(R.string.device_wired_default),
+            defaultSpeakerName = getString(R.string.device_speaker_default),
+        )
         val previous = OrbitEngineRepository.uiState.value.connectedDevice
         OrbitEngineRepository.updateConnectedDevice(detected)
         if (reattachDsp || detected != previous) {
             routeReattachPending.set(true)
             wakeSignal.trySend(Unit)
-        }
-    }
-
-    private fun selectConnectedOutputDevice(devices: Array<out AudioDeviceInfo>): ConnectedOutputDevice {
-        val a2dp = devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
-        val ble = devices.firstOrNull {
-            it.type == AudioDeviceInfo.TYPE_BLE_HEADSET || it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
-        }
-        val btDevice = a2dp ?: ble
-        if (btDevice != null) {
-            val rawName = btDevice.productName?.toString()?.trim().orEmpty()
-            val displayName = rawName.ifEmpty { getString(R.string.device_bluetooth_default) }
-            return ConnectedOutputDevice(
-                name = displayName,
-                isBluetooth = true,
-                isSpeaker = false,
-                isSoundcoreQ30 = PleasureProfiles.detectSoundcoreQ30(displayName),
-            )
-        }
-
-        val wiredOrUsb = devices.firstOrNull {
-            it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
-                it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
-                it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
-                it.type == AudioDeviceInfo.TYPE_HEARING_AID
-        }
-        if (wiredOrUsb != null) {
-            val rawName = wiredOrUsb.productName?.toString()?.trim().orEmpty()
-            val displayName = rawName.ifEmpty { getString(R.string.device_wired_default) }
-            return ConnectedOutputDevice(
-                name = displayName,
-                isBluetooth = false,
-                isSpeaker = false,
-                isSoundcoreQ30 = PleasureProfiles.detectSoundcoreQ30(displayName),
-            )
-        }
-
-        return ConnectedOutputDevice(
-            name = getString(R.string.device_speaker_default),
-            isBluetooth = false,
-            isSpeaker = true,
-            isSoundcoreQ30 = false,
-        )
-    }
-
-    private fun isOutputRouteDevice(device: AudioDeviceInfo): Boolean {
-        if (!device.isSink) return false
-        return when (device.type) {
-            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
-            AudioDeviceInfo.TYPE_BLE_HEADSET,
-            AudioDeviceInfo.TYPE_BLE_SPEAKER,
-            AudioDeviceInfo.TYPE_WIRED_HEADSET,
-            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-            AudioDeviceInfo.TYPE_USB_HEADSET,
-            AudioDeviceInfo.TYPE_USB_DEVICE,
-            AudioDeviceInfo.TYPE_HEARING_AID,
-            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> true
-            else -> false
         }
     }
 
@@ -669,6 +728,14 @@ class OrbitAudioService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        val nextModeIntent = Intent(this, OrbitAudioService::class.java).setAction(ACTION_NEXT_MODE)
+        val nextModePendingIntent = PendingIntent.getService(
+            this,
+            REQ_NEXT_MODE,
+            nextModeIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
         val stopIntent = Intent(this, OrbitAudioService::class.java).setAction(ACTION_STOP_ENGINE)
         val stopPendingIntent = PendingIntent.getService(
             this,
@@ -689,6 +756,7 @@ class OrbitAudioService : Service() {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .addAction(0, getString(R.string.notif_action_bypass), bypassPendingIntent)
+            .addAction(0, getString(R.string.notif_action_next_mode), nextModePendingIntent)
             .addAction(0, getString(R.string.notif_action_stop), stopPendingIntent)
 
         state.connectedDevice.name.takeIf { it.isNotBlank() }?.let { deviceName ->
@@ -706,6 +774,7 @@ class OrbitAudioService : Service() {
         const val ACTION_START_BACKGROUND_SAFE = FgsTierPlanner.ACTION_START_BACKGROUND_SAFE
         const val ACTION_PROMOTE_TO_FULL = FgsTierPlanner.ACTION_PROMOTE_TO_FULL
         const val ACTION_TOGGLE_BYPASS = FgsTierPlanner.ACTION_TOGGLE_BYPASS
+        const val ACTION_NEXT_MODE = FgsTierPlanner.ACTION_NEXT_MODE
         const val ACTION_STOP_ENGINE = FgsTierPlanner.ACTION_STOP_ENGINE
         const val ACTION_UPDATE_SESSION = FgsTierPlanner.ACTION_UPDATE_SESSION
 
@@ -713,14 +782,15 @@ class OrbitAudioService : Service() {
         const val EXTRA_SESSION_OPEN = "com.orbiteq.app.extra.SESSION_OPEN"
         const val EXTRA_SESSION_PACKAGE = "com.orbiteq.app.extra.SESSION_PACKAGE"
         const val EXTRA_ROUTE_REFRESH = "com.orbiteq.app.extra.ROUTE_REFRESH"
+        const val EXTRA_START_ENGINE = "com.orbiteq.app.extra.START_ENGINE"
 
         private const val NOTIFICATION_CHANNEL_ID = "orbit_eq_engine_channel"
         private const val NOTIFICATION_ID = 1001
         private const val REQ_OPEN_APP = 100
         private const val REQ_TOGGLE_BYPASS = 101
         private const val REQ_STOP_ENGINE = 102
+        private const val REQ_NEXT_MODE = 103
 
-        private const val DSP_LOOP_INTERVAL_MS = 55L
         private const val BACKEND_RETRY_INTERVAL_MS = 3000L
         private const val STARTUP_POWER_GRACE_MS = 2500L
         private const val LIMITER_CEILING_DB = -0.5f
@@ -742,8 +812,8 @@ class OrbitAudioService : Service() {
             context: Context,
             sessionId: Int? = null,
             sessionPackage: String? = null,
-        ) {
-            if (isRunning) return
+        ): Boolean {
+            if (isRunning) return true
             val intent = Intent(context, OrbitAudioService::class.java).apply {
                 action = ACTION_START_BACKGROUND_SAFE
                 if (sessionId != null && sessionId > 0) {
@@ -754,7 +824,15 @@ class OrbitAudioService : Service() {
                     }
                 }
             }
-            ContextCompat.startForegroundService(context, intent)
+            return try {
+                ContextCompat.startForegroundService(context, intent)
+                true
+            } catch (_: SecurityException) {
+                false
+            } catch (_: RuntimeException) {
+                // Covers ForegroundServiceStartNotAllowedException (Android 12-16) and OS background FGS blocks.
+                false
+            }
         }
 
         fun promoteToFull(context: Context) {
