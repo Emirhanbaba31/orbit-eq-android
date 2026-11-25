@@ -36,6 +36,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,18 +51,25 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.orbiteq.app.R
 import com.orbiteq.app.dsp.AppRuleResolver
+import com.orbiteq.app.dsp.AutoEqCatalog
+import com.orbiteq.app.dsp.AutoEqParseResult
+import com.orbiteq.app.dsp.AutoEqParser
+import com.orbiteq.app.dsp.CatalogHeadphoneEntry
 import com.orbiteq.app.model.AppRule
 import com.orbiteq.app.model.AppRuleAction
 import com.orbiteq.app.model.DspBackend
@@ -84,6 +93,12 @@ import com.orbiteq.app.ui.theme.LocalOrbitColors
 import com.orbiteq.app.ui.theme.SpaceMonoTabularStyle
 import java.util.Locale
 
+private enum class AutoEqImportTab {
+    CATALOG,
+    FILE,
+    PASTE,
+}
+
 @Composable
 fun ActivityScreen(
     uiState: OrbitUiState,
@@ -100,10 +115,24 @@ fun ActivityScreen(
     onOpenNotificationListenerSettings: () -> Unit,
     onRequestPostNotifications: () -> Unit,
     onRequestBatteryOptimizationExemption: () -> Unit,
+    statusBannerMessage: String? = null,
+    onDismissStatusBanner: () -> Unit = {},
+    onPostStatusBanner: (String) -> Unit = {},
+    onSelectCustomHeadphoneProfile: (String) -> Unit = {},
+    onDeleteCustomHeadphoneProfile: (String) -> Unit = {},
+    onImportCatalogHeadphone: (CatalogHeadphoneEntry) -> Unit = {},
+    onImportAutoEqText: (String, String) -> AutoEqParseResult = { _, text -> AutoEqParser.parse(text) },
+    onPickAutoEqFile: () -> Unit = {},
+    onExportBackupJson: () -> Unit = {},
+    onImportBackupJson: () -> Unit = {},
+    onCopyDiagnostics: () -> Unit = {},
+    onShareDiagnostics: () -> Unit = {},
 ) {
+    val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val layoutDirection = LocalLayoutDirection.current
     var editingRulePkg by rememberSaveable { mutableStateOf<String?>(null) }
+    var showAutoEqImportDialog by rememberSaveable { mutableStateOf(false) }
 
     val sortedRules = remember(uiState.settings.appRules, uiState.nowPlaying.packageName) {
         val activePkg = uiState.nowPlaying.packageName?.trim()?.lowercase(Locale.ROOT)
@@ -126,7 +155,8 @@ fun ActivityScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .widthIn(max = 720.dp),
+            .widthIn(max = 720.dp)
+            .testTag("activity_list"),
         contentPadding = PaddingValues(
             start = contentPadding.calculateStartPadding(layoutDirection) + 16.dp,
             end = contentPadding.calculateEndPadding(layoutDirection) + 16.dp,
@@ -135,6 +165,15 @@ fun ActivityScreen(
         ),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        if (!statusBannerMessage.isNullOrBlank()) {
+            item(key = "status_banner") {
+                StatusFeedbackBanner(
+                    message = statusBannerMessage,
+                    onDismiss = onDismissStatusBanner,
+                )
+            }
+        }
+
         item(key = "live_engine_telemetry") {
             LiveEngineTelemetryCard(
                 uiState = uiState,
@@ -152,6 +191,15 @@ fun ActivityScreen(
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     onHeadphoneProfileChange(profile)
                 },
+                onSelectCustomProfile = { profileId ->
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onSelectCustomHeadphoneProfile(profileId)
+                },
+                onDeleteCustomProfile = { profileId ->
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onDeleteCustomHeadphoneProfile(profileId)
+                },
+                onOpenAutoEqImport = { showAutoEqImportDialog = true },
                 onDismissQ30Tip = onDismissQ30Tip,
             )
         }
@@ -266,6 +314,39 @@ fun ActivityScreen(
                 },
             )
         }
+
+        item(key = "backup_diagnostics_card") {
+            BackupDiagnosticsCard(
+                onExportBackupJson = onExportBackupJson,
+                onImportBackupJson = onImportBackupJson,
+                onCopyDiagnostics = onCopyDiagnostics,
+                onShareDiagnostics = onShareDiagnostics,
+            )
+        }
+    }
+
+    if (showAutoEqImportDialog) {
+        AutoEqImportDialog(
+            onDismiss = { showAutoEqImportDialog = false },
+            onSelectCatalogEntry = { entry ->
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onImportCatalogHeadphone(entry)
+                onPostStatusBanner(context.getString(R.string.autoeq_catalog_selected_fmt, entry.name))
+                showAutoEqImportDialog = false
+            },
+            onPickFile = {
+                showAutoEqImportDialog = false
+                onPickAutoEqFile()
+            },
+            onImportPastedText = { name, rawText ->
+                val result = onImportAutoEqText(name, rawText)
+                if (result is AutoEqParseResult.Success) {
+                    onPostStatusBanner(context.getString(R.string.autoeq_import_success_fmt, name))
+                    showAutoEqImportDialog = false
+                }
+                result
+            },
+        )
     }
 
     val editingRule = editingRulePkg?.let { pkg ->
@@ -289,6 +370,63 @@ fun ActivityScreen(
                 editingRulePkg = null
             },
         )
+    }
+}
+
+@Composable
+private fun StatusFeedbackBanner(
+    message: String,
+    onDismiss: () -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    val dismissCd = stringResource(R.string.banner_dismiss_cd)
+
+    OrbitGlassCard(
+        highlighted = true,
+        cornerRadius = 14.dp,
+        contentPadding = PaddingValues(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = OrbitIcons.CheckCircle,
+                contentDescription = null,
+                tint = colors.ionAccent,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = message,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = colors.textPrimary,
+                ),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Box(
+                modifier = Modifier
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(
+                        role = Role.Button,
+                        onClick = onDismiss,
+                    )
+                    .semantics {
+                        contentDescription = dismissCd
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = OrbitIcons.Close,
+                    contentDescription = null,
+                    tint = colors.textSecondary,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
     }
 }
 
@@ -335,8 +473,14 @@ private fun LiveEngineTelemetryCard(
     }
 
     val (backendTitle, backendSub) = when (telemetry.dspBackend) {
-        DspBackend.DYNAMICS_PROCESSING -> stringResource(R.string.telemetry_backend_dp) to
-            stringResource(R.string.telemetry_backend_dp_sub)
+        DspBackend.DYNAMICS_PROCESSING -> {
+            val titleRes = if (telemetry.preEqBandCount >= 31) {
+                R.string.telemetry_backend_dp_31
+            } else {
+                R.string.telemetry_backend_dp
+            }
+            stringResource(titleRes) to stringResource(R.string.telemetry_backend_dp_sub)
+        }
         DspBackend.LEGACY_EQ -> stringResource(R.string.telemetry_backend_legacy) to
             stringResource(R.string.telemetry_backend_legacy_sub)
         DspBackend.NONE -> stringResource(R.string.telemetry_backend_none) to
@@ -543,9 +687,13 @@ private fun TelemetryStatTile(
 private fun HeadphoneCompensationCard(
     uiState: OrbitUiState,
     onSelectProfile: (HeadphoneProfile) -> Unit,
+    onSelectCustomProfile: (String) -> Unit,
+    onDeleteCustomProfile: (String) -> Unit,
+    onOpenAutoEqImport: () -> Unit,
     onDismissQ30Tip: () -> Unit,
 ) {
     val colors = LocalOrbitColors.current
+    val deleteCd = stringResource(R.string.autoeq_delete_cd)
     val showQ30Banner = (
         uiState.connectedDevice.isSoundcoreQ30 ||
             uiState.activeHeadphoneProfile == HeadphoneProfile.Q30_CLEAN_BASE ||
@@ -664,7 +812,8 @@ private fun HeadphoneCompensationCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             profiles.forEach { (profile, title, desc) ->
-                val selected = uiState.activeHeadphoneProfile == profile
+                val selected = uiState.activeCustomHeadphoneProfile == null &&
+                    uiState.activeHeadphoneProfile == profile
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -712,8 +861,394 @@ private fun HeadphoneCompensationCard(
                     )
                 }
             }
+
+            uiState.settings.customHeadphoneProfiles.forEach { custom ->
+                val selected = uiState.activeCustomHeadphoneProfile?.id == custom.id
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 56.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) colors.surfaceElevated else colors.surface)
+                        .border(
+                            width = 1.dp,
+                            color = if (selected) colors.borderActive else colors.borderHairline,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        .selectable(
+                            selected = selected,
+                            role = Role.RadioButton,
+                            onClick = { onSelectCustomProfile(custom.id) },
+                        )
+                        .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = custom.name,
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.textPrimary,
+                            ),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        OrbitStatusChip(
+                            text = stringResource(R.string.autoeq_custom_badge, custom.sourceLabel),
+                            accentColor = if (selected) colors.ionAccent else colors.textSecondary,
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                    if (selected) {
+                        Icon(
+                            imageVector = OrbitIcons.CheckCircle,
+                            contentDescription = null,
+                            tint = colors.ionAccent,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(
+                                role = Role.Button,
+                                onClick = { onDeleteCustomProfile(custom.id) },
+                            )
+                            .semantics {
+                                contentDescription = "$deleteCd ${custom.name}"
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = OrbitIcons.Delete,
+                            contentDescription = null,
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        OutlinedButton(
+            onClick = onOpenAutoEqImport,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, colors.borderActive),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            Icon(
+                imageVector = OrbitIcons.Import,
+                contentDescription = null,
+                tint = colors.ionAccent,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = stringResource(R.string.autoeq_import_btn),
+                style = MaterialTheme.typography.labelLarge.copy(
+                    color = colors.textPrimary,
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
+}
+
+@Composable
+private fun AutoEqImportDialog(
+    onDismiss: () -> Unit,
+    onSelectCatalogEntry: (CatalogHeadphoneEntry) -> Unit,
+    onPickFile: () -> Unit,
+    onImportPastedText: (String, String) -> AutoEqParseResult,
+) {
+    val colors = LocalOrbitColors.current
+    var selectedTab by rememberSaveable { mutableStateOf(AutoEqImportTab.CATALOG) }
+    var nameInput by rememberSaveable { mutableStateOf("") }
+    var rawTextInput by rememberSaveable { mutableStateOf("") }
+    var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+
+    val emptyNameError = stringResource(R.string.autoeq_error_empty_name)
+    val invalidFormatError = stringResource(R.string.autoeq_error_invalid_format)
+
+    val tabs = listOf(
+        AutoEqImportTab.CATALOG to stringResource(R.string.autoeq_tab_catalog),
+        AutoEqImportTab.FILE to stringResource(R.string.autoeq_tab_file),
+        AutoEqImportTab.PASTE to stringResource(R.string.autoeq_tab_paste),
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surfaceElevated,
+        titleContentColor = colors.textPrimary,
+        textContentColor = colors.textSecondary,
+        shape = RoundedCornerShape(20.dp),
+        title = {
+            Text(
+                text = stringResource(R.string.autoeq_dialog_title),
+                style = MaterialTheme.typography.titleLarge.copy(
+                    color = colors.textPrimary,
+                ),
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .selectableGroup(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    tabs.forEach { (tab, label) ->
+                        val selected = tab == selectedTab
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (selected) colors.primaryAccent else colors.surface)
+                                .border(
+                                    width = 1.dp,
+                                    color = if (selected) colors.borderActive else colors.borderHairline,
+                                    shape = RoundedCornerShape(10.dp),
+                                )
+                                .selectable(
+                                    selected = selected,
+                                    role = Role.Tab,
+                                    onClick = {
+                                        selectedTab = tab
+                                        errorMessage = null
+                                    },
+                                )
+                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontSize = 11.sp,
+                                    lineHeight = 13.sp,
+                                    color = if (selected) colors.onPrimaryAccent else colors.textSecondary,
+                                ),
+                                textAlign = TextAlign.Center,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    when (selectedTab) {
+                        AutoEqImportTab.CATALOG -> {
+                            Text(
+                                text = stringResource(R.string.autoeq_catalog_hint),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = colors.textSecondary,
+                                ),
+                            )
+                            AutoEqCatalog.entries.forEach { entry ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 52.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(colors.surface)
+                                        .border(1.dp, colors.borderHairline, RoundedCornerShape(12.dp))
+                                        .clickable(
+                                            role = Role.Button,
+                                            onClick = { onSelectCatalogEntry(entry) },
+                                        )
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Text(
+                                        text = entry.name,
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.titleSmall.copy(
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = colors.textPrimary,
+                                        ),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Icon(
+                                        imageVector = OrbitIcons.ChevronRight,
+                                        contentDescription = null,
+                                        tint = colors.ionAccent,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                        }
+
+                        AutoEqImportTab.FILE -> {
+                            Text(
+                                text = stringResource(R.string.autoeq_file_hint),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = colors.textSecondary,
+                                ),
+                            )
+                            Button(
+                                onClick = onPickFile,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = colors.primaryAccent,
+                                    contentColor = colors.onPrimaryAccent,
+                                ),
+                            ) {
+                                Icon(
+                                    imageVector = OrbitIcons.Import,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = stringResource(R.string.autoeq_file_pick_btn),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+
+                        AutoEqImportTab.PASTE -> {
+                            OutlinedTextField(
+                                value = nameInput,
+                                onValueChange = {
+                                    if (it.length <= 60) {
+                                        nameInput = it
+                                        errorMessage = null
+                                    }
+                                },
+                                singleLine = true,
+                                label = {
+                                    Text(text = stringResource(R.string.autoeq_name_label))
+                                },
+                                placeholder = {
+                                    Text(
+                                        text = stringResource(R.string.autoeq_name_hint),
+                                        color = colors.textMuted,
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = colors.textPrimary,
+                                    unfocusedTextColor = colors.textPrimary,
+                                    focusedBorderColor = colors.ionAccent,
+                                    unfocusedBorderColor = colors.borderHairline,
+                                    focusedLabelColor = colors.ionAccent,
+                                    unfocusedLabelColor = colors.textSecondary,
+                                    cursorColor = colors.ionAccent,
+                                ),
+                            )
+
+                            OutlinedTextField(
+                                value = rawTextInput,
+                                onValueChange = {
+                                    rawTextInput = it
+                                    errorMessage = null
+                                },
+                                minLines = 4,
+                                maxLines = 7,
+                                label = {
+                                    Text(text = stringResource(R.string.autoeq_text_label))
+                                },
+                                placeholder = {
+                                    Text(
+                                        text = stringResource(R.string.autoeq_text_hint),
+                                        color = colors.textMuted,
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = colors.textPrimary,
+                                    unfocusedTextColor = colors.textPrimary,
+                                    focusedBorderColor = colors.ionAccent,
+                                    unfocusedBorderColor = colors.borderHairline,
+                                    focusedLabelColor = colors.ionAccent,
+                                    unfocusedLabelColor = colors.textSecondary,
+                                    cursorColor = colors.ionAccent,
+                                ),
+                            )
+
+                            val currentError = errorMessage
+                            if (!currentError.isNullOrBlank()) {
+                                Text(
+                                    text = currentError,
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = colors.danger,
+                                        fontWeight = FontWeight.Medium,
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (selectedTab == AutoEqImportTab.PASTE) {
+                Button(
+                    onClick = {
+                        val trimmedName = nameInput.trim()
+                        if (trimmedName.isEmpty()) {
+                            errorMessage = emptyNameError
+                            return@Button
+                        }
+                        val result = onImportPastedText(trimmedName, rawTextInput)
+                        if (result is AutoEqParseResult.Error) {
+                            errorMessage = invalidFormatError
+                        }
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.primaryAccent,
+                        contentColor = colors.onPrimaryAccent,
+                    ),
+                ) {
+                    Text(
+                        text = stringResource(R.string.autoeq_import_save),
+                        maxLines = 1,
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.autoeq_import_cancel),
+                    color = colors.textSecondary,
+                )
+            }
+        },
+    )
 }
 
 @Composable
@@ -1242,6 +1777,101 @@ private fun AppearanceThemeCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun BackupDiagnosticsCard(
+    onExportBackupJson: () -> Unit,
+    onImportBackupJson: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
+    onShareDiagnostics: () -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    OrbitGlassCard {
+        SectionLabelText(text = stringResource(R.string.backup_section_title))
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = stringResource(R.string.backup_section_desc),
+            style = MaterialTheme.typography.bodySmall.copy(
+                color = colors.textSecondary,
+            ),
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            BackupActionButton(
+                label = stringResource(R.string.backup_export_btn),
+                icon = OrbitIcons.Export,
+                onClick = onExportBackupJson,
+                modifier = Modifier.weight(1f),
+            )
+            BackupActionButton(
+                label = stringResource(R.string.backup_import_btn),
+                icon = OrbitIcons.Import,
+                onClick = onImportBackupJson,
+                modifier = Modifier.weight(1f),
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            BackupActionButton(
+                label = stringResource(R.string.diagnostics_copy_btn),
+                icon = OrbitIcons.Copy,
+                onClick = onCopyDiagnostics,
+                modifier = Modifier.weight(1f),
+            )
+            BackupActionButton(
+                label = stringResource(R.string.diagnostics_share_btn),
+                icon = OrbitIcons.Share,
+                onClick = onShareDiagnostics,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun BackupActionButton(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalOrbitColors.current
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.heightIn(min = 48.dp),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, colors.borderHairline),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = colors.ionAccent,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = 12.sp,
+                lineHeight = 14.sp,
+                color = colors.textPrimary,
+            ),
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

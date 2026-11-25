@@ -40,6 +40,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -55,9 +57,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -70,6 +74,7 @@ import com.orbiteq.app.R
 import com.orbiteq.app.dsp.PleasureProfiles
 import com.orbiteq.app.model.CustomPreset
 import com.orbiteq.app.model.EngineStatus
+import com.orbiteq.app.model.MbcMode
 import com.orbiteq.app.model.OrbitUiState
 import com.orbiteq.app.model.ResponseSpeed
 import com.orbiteq.app.ui.OrbitGlassCard
@@ -82,8 +87,10 @@ import com.orbiteq.app.ui.modeDisplayName
 import com.orbiteq.app.ui.theme.LocalOrbitColors
 import com.orbiteq.app.ui.theme.SpaceMonoTabularStyle
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private const val MAX_PREAMP_BAR_CUT_DB = 12f
+private const val BALANCE_CENTER_SNAP_EPSILON = 0.04f
 
 @Composable
 fun MixerScreen(
@@ -91,7 +98,10 @@ fun MixerScreen(
     contentPadding: PaddingValues,
     onBandTrimChange: (Int, Float) -> Unit,
     onResetTrims: () -> Unit,
-    onMbcEnabledChange: (Boolean) -> Unit,
+    onMbcModeChange: (MbcMode) -> Unit,
+    onSubsonicFilterChange: (Boolean) -> Unit,
+    onTrueHeadroomChange: (Boolean) -> Unit,
+    onChannelBalanceChange: (Float) -> Unit,
     onResponseSpeedChange: (ResponseSpeed) -> Unit,
     onSavePreset: (String) -> Unit,
     onApplyPreset: (String) -> Unit,
@@ -114,7 +124,8 @@ fun MixerScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .widthIn(max = 720.dp),
+            .widthIn(max = 720.dp)
+            .testTag("mixer_list"),
         contentPadding = PaddingValues(
             start = contentPadding.calculateStartPadding(layoutDirection) + 16.dp,
             end = contentPadding.calculateEndPadding(layoutDirection) + 16.dp,
@@ -218,16 +229,27 @@ fun MixerScreen(
             LimiterPreampCard(
                 preampAttenuationDb = uiState.telemetry.preampAttenuationDb,
                 isLiveProcessing = isLiveProcessing,
+                trueHeadroomMode = uiState.settings.trueHeadroomMode,
+                subsonicFilterEnabled = uiState.settings.subsonicFilterEnabled,
+                onTrueHeadroomChange = onTrueHeadroomChange,
+                onSubsonicFilterChange = onSubsonicFilterChange,
             )
         }
 
         item(key = "mbc_punch_card") {
             MbcPunchCard(
-                mbcEnabled = uiState.settings.mbcEnabled,
-                onMbcEnabledChange = { next ->
+                mbcMode = uiState.settings.mbcMode,
+                onMbcModeChange = { next ->
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onMbcEnabledChange(next)
+                    onMbcModeChange(next)
                 },
+            )
+        }
+
+        item(key = "channel_balance_card") {
+            ChannelBalanceCard(
+                channelBalance = uiState.settings.channelBalance,
+                onChannelBalanceChange = onChannelBalanceChange,
             )
         }
 
@@ -272,6 +294,10 @@ fun MixerScreen(
 private fun LimiterPreampCard(
     preampAttenuationDb: Float,
     isLiveProcessing: Boolean,
+    trueHeadroomMode: Boolean,
+    subsonicFilterEnabled: Boolean,
+    onTrueHeadroomChange: (Boolean) -> Unit,
+    onSubsonicFilterChange: (Boolean) -> Unit,
 ) {
     val colors = LocalOrbitColors.current
     val safeCut = abs(if (preampAttenuationDb.isFinite()) preampAttenuationDb else 0f)
@@ -384,38 +410,130 @@ private fun LimiterPreampCard(
                 )
             }
         }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        LimiterToggleRow(
+            title = stringResource(R.string.dsp_true_headroom_title),
+            description = stringResource(R.string.dsp_true_headroom_desc),
+            checked = trueHeadroomMode,
+            onCheckedChange = onTrueHeadroomChange,
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        LimiterToggleRow(
+            title = stringResource(R.string.dsp_subsonic_title),
+            description = stringResource(R.string.dsp_subsonic_desc),
+            checked = subsonicFilterEnabled,
+            onCheckedChange = onSubsonicFilterChange,
+        )
+    }
+}
+
+@Composable
+private fun LimiterToggleRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    val haptic = LocalHapticFeedback.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(colors.surface.copy(alpha = 0.72f))
+            .border(
+                width = 1.dp,
+                color = if (checked) colors.borderActive else colors.borderHairline,
+                shape = RoundedCornerShape(12.dp),
+            )
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = { next ->
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onCheckedChange(next)
+                },
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.textPrimary,
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = colors.textSecondary,
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = null,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = colors.onPrimaryAccent,
+                checkedTrackColor = colors.primaryAccent,
+                checkedBorderColor = colors.ionAccent,
+                uncheckedThumbColor = colors.textSecondary,
+                uncheckedTrackColor = colors.surfaceElevated,
+                uncheckedBorderColor = colors.borderHairline,
+            ),
+        )
     }
 }
 
 @Composable
 private fun MbcPunchCard(
-    mbcEnabled: Boolean,
-    onMbcEnabledChange: (Boolean) -> Unit,
+    mbcMode: MbcMode,
+    onMbcModeChange: (MbcMode) -> Unit,
 ) {
     val colors = LocalOrbitColors.current
-    OrbitGlassCard(highlighted = mbcEnabled) {
+    val isActive = mbcMode != MbcMode.OFF
+    val statusChipText = when (mbcMode) {
+        MbcMode.OFF -> stringResource(R.string.dsp_mbc_off)
+        MbcMode.SUBTLE -> stringResource(R.string.dsp_mbc_subtle)
+        MbcMode.PUNCHY -> stringResource(R.string.dsp_mbc_punchy)
+    }
+    val options = listOf(
+        MbcMode.OFF to stringResource(R.string.mbc_mode_off),
+        MbcMode.SUBTLE to stringResource(R.string.mbc_mode_subtle),
+        MbcMode.PUNCHY to stringResource(R.string.mbc_mode_punchy),
+    )
+
+    OrbitGlassCard(highlighted = isActive) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 48.dp)
-                .toggleable(
-                    value = mbcEnabled,
-                    role = Role.Switch,
-                    onValueChange = onMbcEnabledChange,
-                ),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Icon(
                 imageVector = OrbitIcons.SparkBolt,
                 contentDescription = null,
-                tint = if (mbcEnabled) colors.ionAccent else colors.textMuted,
+                tint = if (isActive) colors.ionAccent else colors.textMuted,
                 modifier = Modifier.size(22.dp),
             )
-
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(
                     text = stringResource(R.string.dsp_mbc_title),
@@ -433,29 +551,193 @@ private fun MbcPunchCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                OrbitStatusChip(
-                    text = if (mbcEnabled) {
-                        stringResource(R.string.dsp_mbc_active)
-                    } else {
-                        stringResource(R.string.dsp_mbc_off)
-                    },
-                    accentColor = if (mbcEnabled) colors.ionAccent else colors.textMuted,
+            }
+            OrbitStatusChip(
+                text = statusChipText,
+                accentColor = if (isActive) colors.ionAccent else colors.textMuted,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            options.forEach { (mode, label) ->
+                val selected = mode == mbcMode
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) colors.primaryAccent else colors.surface)
+                        .border(
+                            width = 1.dp,
+                            color = if (selected) colors.borderActive else colors.borderHairline,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        .selectable(
+                            selected = selected,
+                            role = Role.RadioButton,
+                            onClick = { onMbcModeChange(mode) },
+                        )
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = label,
+                        style = SpaceMonoTabularStyle.copy(
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (selected) colors.onPrimaryAccent else colors.textSecondary,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChannelBalanceCard(
+    channelBalance: Float,
+    onChannelBalanceChange: (Float) -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    val haptic = LocalHapticFeedback.current
+    val safeBalance = if (channelBalance.isFinite()) channelBalance.coerceIn(-1f, 1f) else 0f
+    val isCentered = abs(safeBalance) < BALANCE_CENTER_SNAP_EPSILON
+    val displayBalance = if (isCentered) 0f else safeBalance
+    val pct = (abs(displayBalance) * 100f).roundToInt().coerceIn(0, 100)
+    val readoutText = when {
+        pct == 0 -> stringResource(R.string.dsp_balance_zero)
+        displayBalance < 0f -> stringResource(R.string.dsp_balance_left_fmt, pct)
+        else -> stringResource(R.string.dsp_balance_right_fmt, pct)
+    }
+    val balanceTitle = stringResource(R.string.dsp_balance_title)
+
+    OrbitGlassCard(highlighted = !isCentered) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                SectionLabelText(text = balanceTitle)
+                Text(
+                    text = stringResource(R.string.dsp_balance_desc),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = colors.textSecondary,
+                    ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
+            Spacer(modifier = Modifier.width(8.dp))
+            OutlinedButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onChannelBalanceChange(0f)
+                },
+                enabled = !isCentered,
+                modifier = Modifier.heightIn(min = 48.dp),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (!isCentered) colors.borderActive else colors.borderHairline,
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Icon(
+                    imageVector = OrbitIcons.Reset,
+                    contentDescription = null,
+                    tint = if (!isCentered) colors.ionAccent else colors.textMuted,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = stringResource(R.string.dsp_balance_reset),
+                    style = MaterialTheme.typography.labelLarge.copy(
+                        fontSize = 12.sp,
+                        color = if (!isCentered) colors.textPrimary else colors.textMuted,
+                    ),
+                    maxLines = 1,
+                )
+            }
+        }
 
-            Switch(
-                checked = mbcEnabled,
-                onCheckedChange = null,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = colors.onPrimaryAccent,
-                    checkedTrackColor = colors.primaryAccent,
-                    checkedBorderColor = colors.ionAccent,
-                    uncheckedThumbColor = colors.textSecondary,
-                    uncheckedTrackColor = colors.surface,
-                    uncheckedBorderColor = colors.borderHairline,
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "L",
+                style = SpaceMonoTabularStyle.copy(
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (displayBalance < 0f) colors.ionAccent else colors.textMuted,
+                ),
+            )
+            Text(
+                text = readoutText,
+                style = SpaceMonoTabularStyle.copy(
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (!isCentered) colors.ionAccent else colors.textSecondary,
+                ),
+                maxLines = 1,
+            )
+            Text(
+                text = "R",
+                style = SpaceMonoTabularStyle.copy(
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (displayBalance > 0f) colors.ionAccent else colors.textMuted,
                 ),
             )
         }
+
+        Slider(
+            value = displayBalance,
+            onValueChange = { raw ->
+                val snapped = if (abs(raw) <= BALANCE_CENTER_SNAP_EPSILON) {
+                    0f
+                } else {
+                    raw.coerceIn(-1f, 1f)
+                }
+                if (snapped == 0f && displayBalance != 0f) {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                }
+                if (snapped != displayBalance) {
+                    onChannelBalanceChange(snapped)
+                }
+            },
+            valueRange = -1.0f..1.0f,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .semantics {
+                    contentDescription = "$balanceTitle $readoutText"
+                },
+            colors = SliderDefaults.colors(
+                thumbColor = colors.textPrimary,
+                activeTrackColor = colors.primaryAccent,
+                inactiveTrackColor = colors.gridMajor,
+                activeTickColor = Color.Transparent,
+                inactiveTickColor = Color.Transparent,
+            ),
+        )
     }
 }
 

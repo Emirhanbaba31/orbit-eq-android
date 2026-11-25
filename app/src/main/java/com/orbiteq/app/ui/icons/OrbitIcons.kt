@@ -417,6 +417,101 @@ object OrbitIcons {
         }
     }
 
+    val Close: ImageVector by lazy {
+        hudIcon("Close") {
+            strokePath {
+                moveTo(6.5f, 6.5f)
+                lineTo(17.5f, 17.5f)
+                moveTo(17.5f, 6.5f)
+                lineTo(6.5f, 17.5f)
+            }
+        }
+    }
+
+    val Import: ImageVector by lazy {
+        hudIcon("Import") {
+            strokePath {
+                moveTo(12f, 4f)
+                verticalLineTo(14.5f)
+                moveTo(8f, 10.5f)
+                lineTo(12f, 14.5f)
+                lineTo(16f, 10.5f)
+                moveTo(4.5f, 16.5f)
+                verticalLineTo(19f)
+                arcTo(1f, 1f, 0f, isMoreThanHalf = false, isPositiveArc = false, 5.5f, 20f)
+                horizontalLineTo(18.5f)
+                arcTo(1f, 1f, 0f, isMoreThanHalf = false, isPositiveArc = false, 19.5f, 19f)
+                verticalLineTo(16.5f)
+            }
+        }
+    }
+
+    val Export: ImageVector by lazy {
+        hudIcon("Export") {
+            strokePath {
+                moveTo(12f, 14.5f)
+                verticalLineTo(4f)
+                moveTo(8f, 8f)
+                lineTo(12f, 4f)
+                lineTo(16f, 8f)
+                moveTo(4.5f, 16.5f)
+                verticalLineTo(19f)
+                arcTo(1f, 1f, 0f, isMoreThanHalf = false, isPositiveArc = false, 5.5f, 20f)
+                horizontalLineTo(18.5f)
+                arcTo(1f, 1f, 0f, isMoreThanHalf = false, isPositiveArc = false, 19.5f, 19f)
+                verticalLineTo(16.5f)
+            }
+        }
+    }
+
+    val Copy: ImageVector by lazy {
+        hudIcon("Copy") {
+            strokePath {
+                moveTo(10f, 9f)
+                horizontalLineTo(18f)
+                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = false, isPositiveArc = true, 19.5f, 10.5f)
+                verticalLineTo(18.5f)
+                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = false, isPositiveArc = true, 18f, 20f)
+                horizontalLineTo(10f)
+                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = false, isPositiveArc = true, 8.5f, 18.5f)
+                verticalLineTo(10.5f)
+                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = false, isPositiveArc = true, 10f, 9f)
+                close()
+                moveTo(15.5f, 6.2f)
+                verticalLineTo(5.5f)
+                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = false, isPositiveArc = false, 14f, 4f)
+                horizontalLineTo(6f)
+                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = false, isPositiveArc = false, 4.5f, 5.5f)
+                verticalLineTo(13.5f)
+                arcTo(1.5f, 1.5f, 0f, isMoreThanHalf = false, isPositiveArc = false, 6f, 15f)
+                horizontalLineTo(6.7f)
+            }
+        }
+    }
+
+    val Share: ImageVector by lazy {
+        hudIcon("Share") {
+            strokePath {
+                moveTo(8.3f, 10.8f)
+                lineTo(15.2f, 6.8f)
+                moveTo(8.3f, 13.2f)
+                lineTo(15.2f, 17.2f)
+                moveTo(4f, 12f)
+                arcTo(2.3f, 2.3f, 0f, isMoreThanHalf = true, isPositiveArc = true, 8.6f, 12f)
+                arcTo(2.3f, 2.3f, 0f, isMoreThanHalf = true, isPositiveArc = true, 4f, 12f)
+                close()
+                moveTo(15.2f, 5.8f)
+                arcTo(2.3f, 2.3f, 0f, isMoreThanHalf = true, isPositiveArc = true, 19.8f, 5.8f)
+                arcTo(2.3f, 2.3f, 0f, isMoreThanHalf = true, isPositiveArc = true, 15.2f, 5.8f)
+                close()
+                moveTo(15.2f, 18.2f)
+                arcTo(2.3f, 2.3f, 0f, isMoreThanHalf = true, isPositiveArc = true, 19.8f, 18.2f)
+                arcTo(2.3f, 2.3f, 0f, isMoreThanHalf = true, isPositiveArc = true, 15.2f, 18.2f)
+                close()
+            }
+        }
+    }
+
     private fun hudIcon(
         name: String,
         block: ImageVector.Builder.() -> Unit,

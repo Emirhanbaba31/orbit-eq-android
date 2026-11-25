@@ -3,7 +3,7 @@ package com.orbiteq.app.ui
 import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
-import android.media.AudioDeviceInfo
+import android.graphics.Bitmap
 import android.media.AudioManager
 import android.os.Build
 import android.os.PowerManager
@@ -11,18 +11,26 @@ import androidx.compose.runtime.Immutable
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
+import com.orbiteq.app.BuildConfig
 import com.orbiteq.app.R
+import com.orbiteq.app.data.DiagnosticsFormatter
+import com.orbiteq.app.data.DiagnosticsSnapshot
 import com.orbiteq.app.data.OrbitEngineRepository
-import com.orbiteq.app.dsp.PleasureProfiles
+import com.orbiteq.app.dsp.AutoEqCatalog
+import com.orbiteq.app.dsp.AutoEqParseResult
+import com.orbiteq.app.dsp.AutoEqParser
+import com.orbiteq.app.dsp.CatalogHeadphoneEntry
 import com.orbiteq.app.model.AppRule
-import com.orbiteq.app.model.ConnectedOutputDevice
 import com.orbiteq.app.model.HeadphoneProfile
+import com.orbiteq.app.model.MbcMode
 import com.orbiteq.app.model.OrbitThemeMode
 import com.orbiteq.app.model.OrbitUiState
 import com.orbiteq.app.model.PleasureMode
 import com.orbiteq.app.model.ResponseSpeed
 import com.orbiteq.app.model.SessionAttachmentMode
+import com.orbiteq.app.service.AudioRouteResolver
 import com.orbiteq.app.service.OrbitAudioService
+import com.orbiteq.app.service.OrbitWidgetUpdater
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,9 +46,13 @@ data class OrbitPermissionState(
 class OrbitViewModel(application: Application) : AndroidViewModel(application) {
 
     val uiState: StateFlow<OrbitUiState> = OrbitEngineRepository.uiState
+    val nowPlayingArtwork: StateFlow<Bitmap?> = OrbitEngineRepository.nowPlayingArtwork
 
     private val _permissionState = MutableStateFlow(readPermissions())
     val permissionState: StateFlow<OrbitPermissionState> = _permissionState.asStateFlow()
+
+    private val _statusBannerMessage = MutableStateFlow<String?>(null)
+    val statusBannerMessage: StateFlow<String?> = _statusBannerMessage.asStateFlow()
 
     init {
         OrbitEngineRepository.init(application)
@@ -72,6 +84,17 @@ class OrbitViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun postStatusBanner(message: String) {
+        val trimmed = message.trim()
+        if (trimmed.isNotEmpty()) {
+            _statusBannerMessage.value = trimmed
+        }
+    }
+
+    fun clearStatusBanner() {
+        _statusBannerMessage.value = null
+    }
+
     fun setPowerEnabled(enabled: Boolean) {
         val app = getApplication<Application>()
         OrbitEngineRepository.setPowerEnabled(enabled)
@@ -80,14 +103,17 @@ class OrbitViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             OrbitAudioService.stopEngine(app)
         }
+        OrbitWidgetUpdater.requestUpdate(app)
     }
 
     fun setBypassed(bypassed: Boolean) {
         OrbitEngineRepository.setBypassed(bypassed)
+        OrbitWidgetUpdater.requestUpdate(getApplication())
     }
 
     fun selectMode(mode: PleasureMode) {
         OrbitEngineRepository.selectModeManually(mode)
+        OrbitWidgetUpdater.requestUpdate(getApplication())
     }
 
     fun saveCurrentModeForActiveApp() {
@@ -110,8 +136,20 @@ class OrbitViewModel(application: Application) : AndroidViewModel(application) {
         OrbitEngineRepository.setDynamicLoudness(enabled)
     }
 
-    fun setMbcEnabled(enabled: Boolean) {
-        OrbitEngineRepository.setMbcEnabled(enabled)
+    fun setMbcMode(mode: MbcMode) {
+        OrbitEngineRepository.setMbcMode(mode)
+    }
+
+    fun setSubsonicFilterEnabled(enabled: Boolean) {
+        OrbitEngineRepository.setSubsonicFilterEnabled(enabled)
+    }
+
+    fun setTrueHeadroomMode(enabled: Boolean) {
+        OrbitEngineRepository.setTrueHeadroomMode(enabled)
+    }
+
+    fun setChannelBalance(balance: Float) {
+        OrbitEngineRepository.setChannelBalance(balance)
     }
 
     fun setResponseSpeed(speed: ResponseSpeed) {
@@ -140,6 +178,53 @@ class OrbitViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setHeadphoneProfile(profile: HeadphoneProfile) {
         OrbitEngineRepository.setHeadphoneProfileForCurrentDevice(profile)
+        OrbitWidgetUpdater.requestUpdate(getApplication())
+    }
+
+    fun importAutoEqText(name: String, rawText: String): AutoEqParseResult {
+        val result = AutoEqParser.parse(rawText)
+        if (result is AutoEqParseResult.Success) {
+            val resolvedName = name.trim().ifEmpty { "AutoEQ Profile" }
+            val imported = OrbitEngineRepository.importCustomHeadphoneProfile(
+                name = resolvedName,
+                gains31Db = result.gains31Db,
+                sourceLabel = "AutoEQ",
+                assignToCurrentDevice = true,
+            )
+            if (imported != null) {
+                OrbitWidgetUpdater.requestUpdate(getApplication())
+            }
+        }
+        return result
+    }
+
+    fun importCatalogHeadphone(entry: CatalogHeadphoneEntry) {
+        val existing = uiState.value.settings.customHeadphoneProfiles.firstOrNull {
+            it.name.equals(entry.name, ignoreCase = true)
+        }
+        if (existing != null) {
+            OrbitEngineRepository.selectCustomHeadphoneProfileForCurrentDevice(existing.id)
+        } else {
+            val catalogProfile = AutoEqCatalog.toCustomProfile(entry)
+            OrbitEngineRepository.importCustomHeadphoneProfile(
+                name = catalogProfile.name,
+                gains31Db = catalogProfile.gains31Db,
+                extraHeadroomDb = catalogProfile.extraHeadroomDb,
+                sourceLabel = catalogProfile.sourceLabel,
+                assignToCurrentDevice = true,
+            )
+        }
+        OrbitWidgetUpdater.requestUpdate(getApplication())
+    }
+
+    fun selectCustomHeadphoneProfile(profileId: String) {
+        OrbitEngineRepository.selectCustomHeadphoneProfileForCurrentDevice(profileId)
+        OrbitWidgetUpdater.requestUpdate(getApplication())
+    }
+
+    fun deleteCustomHeadphoneProfile(profileId: String) {
+        OrbitEngineRepository.deleteCustomHeadphoneProfile(profileId)
+        OrbitWidgetUpdater.requestUpdate(getApplication())
     }
 
     fun dismissQ30Tip() {
@@ -164,6 +249,40 @@ class OrbitViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSessionMode(mode: SessionAttachmentMode) {
         OrbitEngineRepository.setSessionMode(mode)
+    }
+
+    fun exportBackupJson(): String = OrbitEngineRepository.exportBackupJson()
+
+    fun importBackupJson(rawJson: String): Boolean {
+        val ok = OrbitEngineRepository.importBackupJson(rawJson)
+        if (ok) {
+            OrbitWidgetUpdater.requestUpdate(getApplication())
+        }
+        return ok
+    }
+
+    fun buildDiagnosticsReport(): String {
+        val perms = readPermissions()
+        _permissionState.value = perms
+        val manufacturer = Build.MANUFACTURER?.trim().orEmpty()
+        val model = Build.MODEL?.trim().orEmpty()
+        val deviceModel = when {
+            manufacturer.isEmpty() -> model
+            model.startsWith(manufacturer, ignoreCase = true) -> model
+            else -> "$manufacturer $model".trim()
+        }.ifEmpty { "Android" }
+        return DiagnosticsFormatter.format(
+            DiagnosticsSnapshot(
+                versionName = BuildConfig.VERSION_NAME,
+                androidSdk = Build.VERSION.SDK_INT,
+                deviceModel = deviceModel,
+                uiState = uiState.value,
+                hasRecordAudio = perms.hasRecordAudio,
+                hasNotificationAccess = perms.hasNotificationAccess,
+                hasPostNotifications = perms.hasPostNotifications,
+                isBatteryExempt = perms.isBatteryOptimizationIgnored,
+            ),
+        )
     }
 
     private fun readPermissions(): OrbitPermissionState {
@@ -203,52 +322,12 @@ class OrbitViewModel(application: Application) : AndroidViewModel(application) {
         } catch (_: RuntimeException) {
             emptyArray()
         }
-        val detected = resolveOutputDevice(app, outputs)
-        OrbitEngineRepository.updateConnectedDevice(detected)
-    }
-
-    private fun resolveOutputDevice(
-        app: Application,
-        devices: Array<out AudioDeviceInfo>,
-    ): ConnectedOutputDevice {
-        val btDevice = devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
-            ?: devices.firstOrNull {
-                it.type == AudioDeviceInfo.TYPE_BLE_HEADSET || it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
-            }
-        if (btDevice != null) {
-            val rawName = btDevice.productName?.toString()?.trim().orEmpty()
-            val displayName = rawName.ifEmpty { app.getString(R.string.device_bluetooth_default) }
-            return ConnectedOutputDevice(
-                name = displayName,
-                isBluetooth = true,
-                isSpeaker = false,
-                isSoundcoreQ30 = PleasureProfiles.detectSoundcoreQ30(displayName),
-            )
-        }
-
-        val wiredOrUsb = devices.firstOrNull {
-            it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
-                it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
-                it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
-                it.type == AudioDeviceInfo.TYPE_HEARING_AID
-        }
-        if (wiredOrUsb != null) {
-            val rawName = wiredOrUsb.productName?.toString()?.trim().orEmpty()
-            val displayName = rawName.ifEmpty { app.getString(R.string.device_wired_default) }
-            return ConnectedOutputDevice(
-                name = displayName,
-                isBluetooth = false,
-                isSpeaker = false,
-                isSoundcoreQ30 = PleasureProfiles.detectSoundcoreQ30(displayName),
-            )
-        }
-
-        return ConnectedOutputDevice(
-            name = app.getString(R.string.device_speaker_default),
-            isBluetooth = false,
-            isSpeaker = true,
-            isSoundcoreQ30 = false,
+        val detected = AudioRouteResolver.resolveFromSystem(
+            devices = outputs,
+            defaultBluetoothName = app.getString(R.string.device_bluetooth_default),
+            defaultWiredName = app.getString(R.string.device_wired_default),
+            defaultSpeakerName = app.getString(R.string.device_speaker_default),
         )
+        OrbitEngineRepository.updateConnectedDevice(detected)
     }
 }

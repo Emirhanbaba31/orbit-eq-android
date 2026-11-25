@@ -1,10 +1,12 @@
 package com.orbiteq.app.ui.screens
 
+import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -49,7 +52,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
@@ -101,6 +106,7 @@ fun StudioScreen(
     onBassMacroChange: (Float) -> Unit,
     onAirMacroChange: (Float) -> Unit,
     onDynamicLoudnessChange: (Boolean) -> Unit,
+    nowPlayingArtwork: Bitmap? = null,
 ) {
     val colors = LocalOrbitColors.current
     val haptic = LocalHapticFeedback.current
@@ -128,6 +134,7 @@ fun StudioScreen(
         item(key = "now_playing_pill") {
             NowPlayingTelemetryPill(
                 uiState = uiState,
+                nowPlayingArtwork = nowPlayingArtwork,
                 effectiveBypass = effectiveBypass,
                 reducedMotion = reducedMotion,
                 onToggleBypass = {
@@ -234,6 +241,7 @@ fun StudioScreen(
 @Composable
 private fun NowPlayingTelemetryPill(
     uiState: OrbitUiState,
+    nowPlayingArtwork: Bitmap?,
     effectiveBypass: Boolean,
     reducedMotion: Boolean,
     onToggleBypass: () -> Unit,
@@ -271,6 +279,10 @@ private fun NowPlayingTelemetryPill(
 
     val deviceName = resolveOutputDeviceName(uiState.connectedDevice)
     val sourceLabel = modeSourceLabel(uiState.modeSource)
+    val showHiRes31Badge = uiState.settings.powerEnabled &&
+        !effectiveBypass &&
+        uiState.telemetry.preEqBandCount >= 31
+    val safeArtwork = nowPlayingArtwork?.takeIf { !it.isRecycled }
 
     OrbitGlassCard(
         highlighted = uiState.settings.powerEnabled && !effectiveBypass,
@@ -298,16 +310,26 @@ private fun NowPlayingTelemetryPill(
                     ),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    imageVector = OrbitIcons.MusicNote,
-                    contentDescription = null,
-                    tint = if (hasTrack && nowPlaying.isPlaying) {
-                        colors.ionAccent
-                    } else {
-                        colors.textSecondary
-                    },
-                    modifier = Modifier.size(20.dp),
-                )
+                if (safeArtwork != null) {
+                    val artworkBitmap = remember(safeArtwork) { safeArtwork.asImageBitmap() }
+                    Image(
+                        bitmap = artworkBitmap,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    Icon(
+                        imageVector = OrbitIcons.MusicNote,
+                        contentDescription = null,
+                        tint = if (hasTrack && nowPlaying.isPlaying) {
+                            colors.ionAccent
+                        } else {
+                            colors.textSecondary
+                        },
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
 
             Column(
@@ -331,29 +353,42 @@ private fun NowPlayingTelemetryPill(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    itemVerticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        imageVector = outputDeviceIcon(uiState.connectedDevice),
-                        contentDescription = null,
-                        tint = if (uiState.connectedDevice.isSoundcoreQ30) {
-                            colors.ionAccent
-                        } else {
-                            colors.textMuted
-                        },
-                        modifier = Modifier.size(13.dp),
-                    )
-                    Text(
-                        text = "$deviceName · $sourceLabel",
-                        style = SpaceMonoTabularStyle.copy(
-                            fontSize = 10.sp,
-                            color = colors.textMuted,
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Icon(
+                            imageVector = outputDeviceIcon(uiState.connectedDevice),
+                            contentDescription = null,
+                            tint = if (uiState.connectedDevice.isSoundcoreQ30) {
+                                colors.ionAccent
+                            } else {
+                                colors.textMuted
+                            },
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = "$deviceName · $sourceLabel",
+                            style = SpaceMonoTabularStyle.copy(
+                                fontSize = 10.sp,
+                                color = colors.textMuted,
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (showHiRes31Badge) {
+                        OrbitStatusChip(
+                            text = stringResource(R.string.hud_hires_31band_badge),
+                            accentColor = colors.ionAccent,
+                        )
+                    }
                 }
             }
 

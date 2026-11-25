@@ -101,9 +101,16 @@ fun OrbitApp(
     onRequestPostNotifications: () -> Unit,
     onOpenNotificationListenerSettings: () -> Unit,
     onRequestBatteryOptimizationExemption: () -> Unit,
+    onExportBackupJson: () -> Unit,
+    onImportBackupJson: () -> Unit,
+    onPickAutoEqFile: () -> Unit,
+    onCopyDiagnostics: () -> Unit,
+    onShareDiagnostics: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val permissionState by viewModel.permissionState.collectAsStateWithLifecycle()
+    val nowPlayingArtwork by viewModel.nowPlayingArtwork.collectAsStateWithLifecycle()
+    val statusBannerMessage by viewModel.statusBannerMessage.collectAsStateWithLifecycle()
     var activeTab by rememberSaveable { mutableStateOf(OrbitTab.STUDIO) }
     val reducedMotion = rememberReducedMotionEnabled()
 
@@ -149,6 +156,7 @@ fun OrbitApp(
                                 onBassMacroChange = viewModel::setBassMacroDb,
                                 onAirMacroChange = viewModel::setAirMacroDb,
                                 onDynamicLoudnessChange = viewModel::setDynamicLoudness,
+                                nowPlayingArtwork = nowPlayingArtwork,
                             )
 
                             OrbitTab.MIXER -> MixerScreen(
@@ -156,7 +164,10 @@ fun OrbitApp(
                                 contentPadding = screenContentPadding,
                                 onBandTrimChange = viewModel::setBandTrim,
                                 onResetTrims = viewModel::resetManualTrims,
-                                onMbcEnabledChange = viewModel::setMbcEnabled,
+                                onMbcModeChange = viewModel::setMbcMode,
+                                onSubsonicFilterChange = viewModel::setSubsonicFilterEnabled,
+                                onTrueHeadroomChange = viewModel::setTrueHeadroomMode,
+                                onChannelBalanceChange = viewModel::setChannelBalance,
                                 onResponseSpeedChange = viewModel::setResponseSpeed,
                                 onSavePreset = viewModel::saveCustomPreset,
                                 onApplyPreset = viewModel::applyCustomPreset,
@@ -178,6 +189,18 @@ fun OrbitApp(
                                 onOpenNotificationListenerSettings = onOpenNotificationListenerSettings,
                                 onRequestPostNotifications = onRequestPostNotifications,
                                 onRequestBatteryOptimizationExemption = onRequestBatteryOptimizationExemption,
+                                statusBannerMessage = statusBannerMessage,
+                                onDismissStatusBanner = viewModel::clearStatusBanner,
+                                onPostStatusBanner = viewModel::postStatusBanner,
+                                onSelectCustomHeadphoneProfile = viewModel::selectCustomHeadphoneProfile,
+                                onDeleteCustomHeadphoneProfile = viewModel::deleteCustomHeadphoneProfile,
+                                onImportCatalogHeadphone = viewModel::importCatalogHeadphone,
+                                onImportAutoEqText = viewModel::importAutoEqText,
+                                onPickAutoEqFile = onPickAutoEqFile,
+                                onExportBackupJson = onExportBackupJson,
+                                onImportBackupJson = onImportBackupJson,
+                                onCopyDiagnostics = onCopyDiagnostics,
+                                onShareDiagnostics = onShareDiagnostics,
                             )
                         }
                     }
