@@ -3,6 +3,7 @@ package com.orbiteq.app.data
 import com.orbiteq.app.model.AppRule
 import com.orbiteq.app.model.CustomHeadphoneProfile
 import com.orbiteq.app.model.CustomPreset
+import com.orbiteq.app.model.DeEsserMode
 import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.MbcMode
 import com.orbiteq.app.model.OrbitSettings
@@ -38,6 +39,9 @@ data class OrbitBackupPayload(
     val deviceDefaultModes: Map<String, PleasureMode>,
     val appRules: Map<String, AppRule>,
     val pinnedTracks: Map<String, PleasureMode>,
+    val toneTiltDbPerOct: Float = 0f,
+    val deEsserMode: DeEsserMode = DeEsserMode.GENTLE,
+    val loudnessMatchedBypass: Boolean = true,
 )
 
 sealed interface BackupImportResult {
@@ -47,16 +51,19 @@ sealed interface BackupImportResult {
 
 object OrbitBackupCodec {
 
-    const val CURRENT_SCHEMA_VERSION = 2
+    const val CURRENT_SCHEMA_VERSION = 3
 
     private const val BAND_COUNT = 10
     private const val MIN_TRIM_DB = -8.0f
     private const val MAX_TRIM_DB = 8.0f
     private const val MIN_MACRO_DB = -6.0f
     private const val MAX_MACRO_DB = 8.0f
+    private const val MIN_TONE_TILT_DB_PER_OCT = -1.5f
+    private const val MAX_TONE_TILT_DB_PER_OCT = 1.5f
     private const val DEFAULT_INTENSITY = 78
     private const val DEFAULT_BASS_MACRO_DB = 2.0f
     private const val DEFAULT_AIR_MACRO_DB = 1.5f
+    private const val DEFAULT_TONE_TILT_DB_PER_OCT = 0f
 
     fun encodeBackup(
         settings: OrbitSettings,
@@ -86,6 +93,17 @@ object OrbitBackupCodec {
             put("deviceDefaultModes", JSONObject(HistoryCodec.encodeDeviceModes(settings.deviceDefaultModes)))
             put("appRules", JSONObject(HistoryCodec.encodeAppRules(settings.appRules)))
             put("pinnedTracks", JSONObject(HistoryCodec.encodePinnedTracks(settings.pinnedTracks)))
+            put(
+                "toneTiltDbPerOct",
+                sanitizeFloat(
+                    settings.toneTiltDbPerOct,
+                    MIN_TONE_TILT_DB_PER_OCT,
+                    MAX_TONE_TILT_DB_PER_OCT,
+                    DEFAULT_TONE_TILT_DB_PER_OCT,
+                ).toDouble(),
+            )
+            put("deEsserMode", settings.deEsserMode.name)
+            put("loudnessMatchedBypass", settings.loudnessMatchedBypass)
         }
 
         return JSONObject().apply {
@@ -96,7 +114,7 @@ object OrbitBackupCodec {
     }
 
     fun decodeBackup(rawJson: String): BackupImportResult {
-        val trimmed = rawJson.trim()
+        val trimmed = rawJson.trim().trimStart('\uFEFF').trim()
         if (trimmed.isEmpty()) {
             return BackupImportResult.Error("Backup JSON is empty")
         }
@@ -181,6 +199,17 @@ object OrbitBackupCodec {
                 pinnedTracks = normalizeMapKeys(
                     HistoryCodec.decodePinnedTracks(settingsObj.optJSONObject("pinnedTracks")?.toString()),
                 ),
+                toneTiltDbPerOct = settingsObj.safeFloatInRange(
+                    "toneTiltDbPerOct",
+                    MIN_TONE_TILT_DB_PER_OCT,
+                    MAX_TONE_TILT_DB_PER_OCT,
+                    DEFAULT_TONE_TILT_DB_PER_OCT,
+                ),
+                deEsserMode = parseEnumOrDefault(
+                    settingsObj.opt("deEsserMode") as? String,
+                    DeEsserMode.GENTLE,
+                ),
+                loudnessMatchedBypass = (settingsObj.opt("loudnessMatchedBypass") as? Boolean) ?: true,
             )
             BackupImportResult.Success(payload)
         } catch (ex: Exception) {
@@ -250,6 +279,14 @@ object OrbitBackupCodec {
             },
             themeMode = payload.themeMode,
             sessionMode = payload.sessionMode,
+            toneTiltDbPerOct = sanitizeFloat(
+                payload.toneTiltDbPerOct,
+                MIN_TONE_TILT_DB_PER_OCT,
+                MAX_TONE_TILT_DB_PER_OCT,
+                DEFAULT_TONE_TILT_DB_PER_OCT,
+            ),
+            deEsserMode = payload.deEsserMode,
+            loudnessMatchedBypass = payload.loudnessMatchedBypass,
             // Merge collections cleanly
             customPresets = mergedPresets.values.toList(),
             customHeadphoneProfiles = mergedCustomProfiles.values.toList(),

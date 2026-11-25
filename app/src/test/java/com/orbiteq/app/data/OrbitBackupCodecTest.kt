@@ -5,6 +5,7 @@ import com.orbiteq.app.model.AppRule
 import com.orbiteq.app.model.AppRuleAction
 import com.orbiteq.app.model.CustomHeadphoneProfile
 import com.orbiteq.app.model.CustomPreset
+import com.orbiteq.app.model.DeEsserMode
 import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.MbcMode
 import com.orbiteq.app.model.OrbitSettings
@@ -299,7 +300,7 @@ class OrbitBackupCodecTest {
             "[1, 2, 3]",
             "{not-valid-json",
             "{}",
-            """{"schemaVersion": 3, "settings": {}}""",
+            """{"schemaVersion": 4, "settings": {}}""",
             """{"schemaVersion": 99, "settings": {}}""",
             """{"schemaVersion": 0, "settings": {}}""",
             """{"schemaVersion": -1, "settings": {}}""",
@@ -385,5 +386,164 @@ class OrbitBackupCodecTest {
         assertEquals(0f, hp.extraHeadroomDb, 0.0001f)
         assertTrue(payload.deviceProfiles.isEmpty())
         assertEquals(mapOf("ok" to "hp1"), payload.deviceCustomProfileIds)
+    }
+
+    @Test
+    fun encodeAndDecodeBackupRoundTripsV3FieldsAndStripsUtf8Bom() {
+        assertEquals(3, OrbitBackupCodec.CURRENT_SCHEMA_VERSION)
+        val settings = OrbitSettings(
+            powerEnabled = true,
+            bypassed = true,
+            q30TipDismissed = true,
+            selectedMode = PleasureMode.GRAVITY,
+            toneTiltDbPerOct = -0.8f,
+            deEsserMode = DeEsserMode.STRONG,
+            loudnessMatchedBypass = false,
+        )
+
+        val encoded = OrbitBackupCodec.encodeBackup(settings, exportedAtMs = 1_765_000_000_000L)
+        assertFalse(encoded.contains("powerEnabled"))
+        assertFalse(encoded.contains("bypassed"))
+        assertFalse(encoded.contains("q30TipDismissed"))
+        assertFalse(encoded.contains("recentActivity"))
+
+        val withBom = "\uFEFF  $encoded  "
+        val result = OrbitBackupCodec.decodeBackup(withBom)
+        assertTrue(result is BackupImportResult.Success)
+        val payload = (result as BackupImportResult.Success).payload
+        assertEquals(3, payload.schemaVersion)
+        assertEquals(-0.8f, payload.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.STRONG, payload.deEsserMode)
+        assertFalse(payload.loudnessMatchedBypass)
+    }
+
+    @Test
+    fun decodeBackupSupportsV2BackupsAndUtf8BomWithV3Defaults() {
+        val v2WithBom = "\uFEFF" + """
+            {
+              "schemaVersion": 2,
+              "exportedAtMs": 987654,
+              "settings": {
+                "selectedMode": "HORIZON",
+                "intensityPercent": 80,
+                "mbcMode": "PUNCHY",
+                "channelBalance": -0.25
+              }
+            }
+        """.trimIndent()
+
+        val result = OrbitBackupCodec.decodeBackup(v2WithBom)
+        assertTrue(result is BackupImportResult.Success)
+        val payload = (result as BackupImportResult.Success).payload
+        assertEquals(2, payload.schemaVersion)
+        assertEquals(PleasureMode.HORIZON, payload.selectedMode)
+        assertEquals(MbcMode.PUNCHY, payload.mbcMode)
+        assertEquals(-0.25f, payload.channelBalance, 0.0001f)
+        assertEquals(0f, payload.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.GENTLE, payload.deEsserMode)
+        assertTrue(payload.loudnessMatchedBypass)
+
+        val v1WithBom = "\uFEFF" + """
+            {
+              "schemaVersion": 1,
+              "settings": {
+                "mbcEnabled": false
+              }
+            }
+        """.trimIndent()
+        val v1Result = OrbitBackupCodec.decodeBackup(v1WithBom)
+        assertTrue(v1Result is BackupImportResult.Success)
+        val v1Payload = (v1Result as BackupImportResult.Success).payload
+        assertEquals(1, v1Payload.schemaVersion)
+        assertEquals(MbcMode.OFF, v1Payload.mbcMode)
+        assertEquals(0f, v1Payload.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.GENTLE, v1Payload.deEsserMode)
+        assertTrue(v1Payload.loudnessMatchedBypass)
+    }
+
+    @Test
+    fun decodeBackupAndMergeClampsToneTiltSanitizesV3FieldsAndDeduplicatesCatalogProfiles() {
+        val clampedHigh = OrbitBackupCodec.decodeBackup(
+            """
+            {
+              "schemaVersion": 3,
+              "settings": {
+                "toneTiltDbPerOct": 9.0,
+                "deEsserMode": "  OFF  ",
+                "loudnessMatchedBypass": "not-a-bool"
+              }
+            }
+            """.trimIndent(),
+        )
+        assertTrue(clampedHigh is BackupImportResult.Success)
+        val highPayload = (clampedHigh as BackupImportResult.Success).payload
+        assertEquals(1.5f, highPayload.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.OFF, highPayload.deEsserMode)
+        assertTrue(highPayload.loudnessMatchedBypass)
+
+        val sanitized = OrbitBackupCodec.decodeBackup(
+            """
+            {
+              "schemaVersion": 3,
+              "settings": {
+                "toneTiltDbPerOct": 1e100,
+                "deEsserMode": "TURBO_DEESS",
+                "loudnessMatchedBypass": false
+              }
+            }
+            """.trimIndent(),
+        )
+        assertTrue(sanitized is BackupImportResult.Success)
+        val sanitizedPayload = (sanitized as BackupImportResult.Success).payload
+        assertEquals(0f, sanitizedPayload.toneTiltDbPerOct, 0.0001f)
+        assertEquals(0, java.lang.Float.floatToIntBits(sanitizedPayload.toneTiltDbPerOct))
+        assertEquals(DeEsserMode.GENTLE, sanitizedPayload.deEsserMode)
+        assertFalse(sanitizedPayload.loudnessMatchedBypass)
+
+        val negZero = OrbitBackupCodec.decodeBackup(
+            """
+            {
+              "schemaVersion": 3,
+              "settings": {
+                "toneTiltDbPerOct": -0.0
+              }
+            }
+            """.trimIndent(),
+        )
+        assertTrue(negZero is BackupImportResult.Success)
+        assertEquals(0, java.lang.Float.floatToIntBits((negZero as BackupImportResult.Success).payload.toneTiltDbPerOct))
+
+        val localCatalogProfile = CustomHeadphoneProfile(
+            id = "catalog_soundcore_q30",
+            name = "Soundcore Life Q30 (ANC On)",
+            gains31Db = List(31) { -1.0f },
+            sourceLabel = "AutoEQ Catalog",
+        )
+        val incomingCatalogProfile = CustomHeadphoneProfile(
+            id = "catalog_soundcore_q30",
+            name = "Soundcore Life Q30 (ANC On · Oratory1990)",
+            gains31Db = List(31) { -2.0f },
+            sourceLabel = "AutoEQ Catalog",
+        )
+        val current = OrbitSettings(
+            customHeadphoneProfiles = listOf(localCatalogProfile),
+            toneTiltDbPerOct = 0.5f,
+            deEsserMode = DeEsserMode.GENTLE,
+            loudnessMatchedBypass = true,
+        )
+        val incomingPayload = highPayload.copy(
+            toneTiltDbPerOct = 9.0f,
+            deEsserMode = DeEsserMode.STRONG,
+            loudnessMatchedBypass = false,
+            customHeadphoneProfiles = listOf(incomingCatalogProfile),
+        )
+        val merged = OrbitBackupCodec.mergeInto(current, incomingPayload)
+        assertEquals(1.5f, merged.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.STRONG, merged.deEsserMode)
+        assertFalse(merged.loudnessMatchedBypass)
+        assertEquals(1, merged.customHeadphoneProfiles.size)
+        assertEquals("catalog_soundcore_q30", merged.customHeadphoneProfiles[0].id)
+        assertEquals("Soundcore Life Q30 (ANC On · Oratory1990)", merged.customHeadphoneProfiles[0].name)
+        assertEquals(-2.0f, merged.customHeadphoneProfiles[0].gains31Db[0], 0.0001f)
     }
 }

@@ -4,6 +4,7 @@ import com.orbiteq.app.dsp.AppRuleResolver
 import com.orbiteq.app.model.AppRule
 import com.orbiteq.app.model.AppRuleAction
 import com.orbiteq.app.model.ConnectedOutputDevice
+import com.orbiteq.app.model.DeEsserMode
 import com.orbiteq.app.model.EngineStatus
 import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.LiveAudioTelemetry
@@ -14,6 +15,8 @@ import com.orbiteq.app.model.OrbitSettings
 import com.orbiteq.app.model.PleasureMode
 import com.orbiteq.app.model.TrackActivityEntry
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.mutablePreferencesOf
 import androidx.datastore.preferences.core.preferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CompletableDeferred
@@ -768,6 +771,180 @@ class OrbitEngineRepositoryTest {
 
         // Subsequent calls return true immediately without suspending on already-loaded session.
         assertTrue(OrbitEngineRepository.awaitInitialSettingsLoaded(timeoutMs = 1L))
+    }
+
+    @Test
+    fun v3MutatorsClampSanitizeNormalizeZeroAndPersist() = runBlocking {
+        val gateway = FakeOrbitPersistenceGateway()
+        OrbitEngineRepository.initForTesting(gateway)
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        OrbitEngineRepository.setToneTiltDbPerOct(3.0f)
+        OrbitEngineRepository.setDeEsserMode(DeEsserMode.STRONG)
+        OrbitEngineRepository.setLoudnessMatchedBypass(false)
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        var settings = OrbitEngineRepository.uiState.value.settings
+        assertEquals(1.5f, settings.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.STRONG, settings.deEsserMode)
+        assertFalse(settings.loudnessMatchedBypass)
+        assertEquals(settings, gateway.currentSettings())
+
+        OrbitEngineRepository.setToneTiltDbPerOct(-3.0f)
+        OrbitEngineRepository.flushPersistenceForTesting()
+        assertEquals(-1.5f, OrbitEngineRepository.uiState.value.settings.toneTiltDbPerOct, 0.0001f)
+
+        OrbitEngineRepository.setToneTiltDbPerOct(Float.NaN)
+        OrbitEngineRepository.flushPersistenceForTesting()
+        assertEquals(0f, OrbitEngineRepository.uiState.value.settings.toneTiltDbPerOct, 0.0001f)
+
+        OrbitEngineRepository.setToneTiltDbPerOct(-0.0f)
+        OrbitEngineRepository.flushPersistenceForTesting()
+        val negZeroCleared = OrbitEngineRepository.uiState.value.settings.toneTiltDbPerOct
+        assertEquals(0, java.lang.Float.floatToIntBits(negZeroCleared))
+        assertEquals(0, java.lang.Float.floatToIntBits(gateway.currentSettings().toneTiltDbPerOct))
+
+        OrbitEngineRepository.setToneTiltDbPerOct(-0.7f)
+        OrbitEngineRepository.setDeEsserMode(DeEsserMode.OFF)
+        OrbitEngineRepository.setLoudnessMatchedBypass(true)
+        OrbitEngineRepository.flushPersistenceForTesting()
+        settings = OrbitEngineRepository.uiState.value.settings
+        assertEquals(-0.7f, settings.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.OFF, settings.deEsserMode)
+        assertTrue(settings.loudnessMatchedBypass)
+        assertEquals(settings, gateway.currentSettings())
+    }
+
+    @Test
+    fun deterministicCatalogIdImportUpsertsInPlaceAndDeduplicatesAcrossBackupMerge() = runBlocking {
+        val gateway = FakeOrbitPersistenceGateway()
+        OrbitEngineRepository.initForTesting(gateway)
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        val q30Device = ConnectedOutputDevice(
+            name = "Soundcore Life Q30",
+            isBluetooth = true,
+            isSpeaker = false,
+            isSoundcoreQ30 = true,
+        )
+        OrbitEngineRepository.updateConnectedDevice(q30Device)
+
+        val userProfile = OrbitEngineRepository.importCustomHeadphoneProfile(
+            name = "User AutoEQ",
+            gains31Db = List(31) { 1.0f },
+            preferredId = "   ",
+            assignToCurrentDevice = false,
+        )!!
+        assertTrue(userProfile.id.isNotBlank())
+
+        val catalogFirst = OrbitEngineRepository.importCustomHeadphoneProfile(
+            name = "Soundcore Life Q30 (ANC On)",
+            gains31Db = List(31) { -2.0f },
+            extraHeadroomDb = 1.0f,
+            sourceLabel = "AutoEQ Catalog",
+            assignToCurrentDevice = true,
+            preferredId = "catalog_soundcore_q30",
+        )!!
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        assertEquals("catalog_soundcore_q30", catalogFirst.id)
+        assertEquals(2, OrbitEngineRepository.uiState.value.settings.customHeadphoneProfiles.size)
+        assertEquals(catalogFirst, OrbitEngineRepository.uiState.value.activeCustomHeadphoneProfile)
+
+        // Re-importing with whitespace-padded deterministic catalog ID updates in-place without creating duplicate
+        val catalogUpdated = OrbitEngineRepository.importCustomHeadphoneProfile(
+            name = "Soundcore Life Q30 (ANC On · Oratory1990)",
+            gains31Db = List(31) { -3.5f },
+            extraHeadroomDb = 2.0f,
+            sourceLabel = "AutoEQ Catalog",
+            assignToCurrentDevice = true,
+            preferredId = "  catalog_soundcore_q30  ",
+        )!!
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        assertEquals("catalog_soundcore_q30", catalogUpdated.id)
+        val profilesAfterUpsert = OrbitEngineRepository.uiState.value.settings.customHeadphoneProfiles
+        assertEquals(2, profilesAfterUpsert.size)
+        assertEquals(userProfile.id, profilesAfterUpsert[0].id)
+        assertEquals("catalog_soundcore_q30", profilesAfterUpsert[1].id)
+        assertEquals("Soundcore Life Q30 (ANC On · Oratory1990)", profilesAfterUpsert[1].name)
+        assertEquals(-3.5f, profilesAfterUpsert[1].gains31Db[0], 0.0001f)
+        assertEquals(
+            "catalog_soundcore_q30",
+            gateway.currentSettings().deviceCustomProfileIds["soundcore life q30"],
+        )
+
+        // Cross-device BOM-prefixed v3 backup containing the same catalog ID + a second catalog model deduplicates cleanly
+        val remoteBackupJson = "\uFEFF" + OrbitBackupCodec.encodeBackup(
+            OrbitSettings(
+                customHeadphoneProfiles = listOf(
+                    catalogUpdated.copy(gains31Db = List(31) { -4.0f }),
+                    com.orbiteq.app.model.CustomHeadphoneProfile(
+                        id = "catalog_sony_xm5",
+                        name = "Sony WH-1000XM5 (Harman)",
+                        gains31Db = List(31) { -1.5f },
+                        sourceLabel = "AutoEQ Catalog",
+                    ),
+                ),
+                deviceCustomProfileIds = mapOf("sony wh-1000xm5" to "catalog_sony_xm5"),
+            ),
+            exportedAtMs = 1_765_100_000_000L,
+        )
+        assertTrue(OrbitEngineRepository.importBackupJson(remoteBackupJson))
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        val mergedProfiles = OrbitEngineRepository.uiState.value.settings.customHeadphoneProfiles
+        assertEquals(3, mergedProfiles.size)
+        assertEquals(1, mergedProfiles.count { it.id == "catalog_soundcore_q30" })
+        assertEquals(-4.0f, mergedProfiles.first { it.id == "catalog_soundcore_q30" }.gains31Db[0], 0.0001f)
+        assertEquals("catalog_sony_xm5", mergedProfiles.last().id)
+        assertEquals(mergedProfiles, gateway.currentSettings().customHeadphoneProfiles)
+    }
+
+    @Test
+    fun v1V2ToV3DataStoreMigrationAndTrimmedEnumsDecodeAndEncodeCleanly() {
+        val v2Prefs = preferencesOf(
+            booleanPreferencesKey("power_enabled") to true,
+            stringPreferencesKey("mbc_mode") to "PUNCHY",
+        )
+        val decodedDefaults = OrbitPreferencesStore.decodeSettings(v2Prefs)
+        assertTrue(decodedDefaults.powerEnabled)
+        assertEquals(MbcMode.PUNCHY, decodedDefaults.mbcMode)
+        assertEquals(0f, decodedDefaults.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.GENTLE, decodedDefaults.deEsserMode)
+        assertTrue(decodedDefaults.loudnessMatchedBypass)
+
+        val v3Prefs = preferencesOf(
+            floatPreferencesKey("tone_tilt_db_per_oct") to 5.0f,
+            stringPreferencesKey("de_esser_mode") to "  STRONG  ",
+            booleanPreferencesKey("loudness_matched_bypass") to false,
+            stringPreferencesKey("selected_mode") to "  GRAVITY  ",
+        )
+        val decodedV3 = OrbitPreferencesStore.decodeSettings(v3Prefs)
+        assertEquals(1.5f, decodedV3.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.STRONG, decodedV3.deEsserMode)
+        assertFalse(decodedV3.loudnessMatchedBypass)
+        assertEquals(PleasureMode.GRAVITY, decodedV3.selectedMode)
+
+        val nanAndNegZeroPrefs = preferencesOf(
+            floatPreferencesKey("tone_tilt_db_per_oct") to Float.NaN,
+            stringPreferencesKey("de_esser_mode") to "   ",
+        )
+        val decodedSanitized = OrbitPreferencesStore.decodeSettings(nanAndNegZeroPrefs)
+        assertEquals(0f, decodedSanitized.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.GENTLE, decodedSanitized.deEsserMode)
+
+        val mutablePrefs = mutablePreferencesOf()
+        val toSave = OrbitSettings(
+            toneTiltDbPerOct = -1.2f,
+            deEsserMode = DeEsserMode.OFF,
+            loudnessMatchedBypass = false,
+        )
+        OrbitPreferencesStore.encodeSettings(mutablePrefs, toSave)
+        val roundTripped = OrbitPreferencesStore.decodeSettings(mutablePrefs)
+        assertEquals(-1.2f, roundTripped.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.OFF, roundTripped.deEsserMode)
+        assertFalse(roundTripped.loudnessMatchedBypass)
     }
 
     private class FakeOrbitPersistenceGateway(

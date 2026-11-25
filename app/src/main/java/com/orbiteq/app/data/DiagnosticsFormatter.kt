@@ -3,6 +3,7 @@ package com.orbiteq.app.data
 import com.orbiteq.app.model.OrbitUiState
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 data class DiagnosticsSnapshot(
     val versionName: String,
@@ -21,7 +22,7 @@ object DiagnosticsFormatter {
         val state = snapshot.uiState
         val settings = state.settings
         val telemetry = state.telemetry
-        val version = snapshot.versionName.trim().ifEmpty { "2.0.0" }
+        val version = snapshot.versionName.trim().ifEmpty { "3.0.0" }
         val deviceModel = snapshot.deviceModel.trim().ifEmpty { "Unknown Device" }
 
         val deviceName = state.connectedDevice.name.trim().ifEmpty {
@@ -35,6 +36,11 @@ object DiagnosticsFormatter {
             state.autoBypassedByRule -> "AUTO"
             else -> "OFF"
         }
+        val dspBandsSummary = if (telemetry.mbcBandCount > 0) {
+            "${telemetry.preEqBandCount}-band PreEQ / ${telemetry.mbcBandCount}-band MBC"
+        } else {
+            "${telemetry.preEqBandCount}-band PreEQ"
+        }
 
         return buildString {
             appendLine("ORBIT EQ v$version Diagnostics")
@@ -44,7 +50,7 @@ object DiagnosticsFormatter {
                     "Mode: ${state.activeMode.name} (${state.modeSource.name}) @ ${settings.intensityPercent}%",
             )
             appendLine(
-                "DSP Backend: ${telemetry.dspBackend.name} (${telemetry.preEqBandCount}-band PreEQ) | " +
+                "DSP Backend: ${telemetry.dspBackend.name} ($dspBandsSummary) | " +
                     "Session: #${telemetry.activeSessionId} (${settings.sessionMode.name})",
             )
             appendLine(
@@ -63,6 +69,11 @@ object DiagnosticsFormatter {
                     "True Headroom: ${flagLabel(settings.trueHeadroomMode)} | " +
                     "L/R Balance: ${formatBalance(settings.channelBalance)}",
             )
+            appendLine(
+                "Tone Tilt: ${formatTilt(settings.toneTiltDbPerOct)} | " +
+                    "De-Esser: ${settings.deEsserMode.name} | " +
+                    "Loudness-Matched A/B: ${flagLabel(settings.loudnessMatchedBypass)}",
+            )
             append(
                 "Permissions: RECORD_AUDIO=${permLabel(snapshot.hasRecordAudio)}, " +
                     "NotificationAccess=${permLabel(snapshot.hasNotificationAccess)}, " +
@@ -77,11 +88,17 @@ object DiagnosticsFormatter {
         return String.format(Locale.ROOT, "%.1f dB", safe)
     }
 
+    private fun formatTilt(tiltDbPerOct: Float): String {
+        val safe = if (tiltDbPerOct.isFinite()) tiltDbPerOct.coerceIn(-1.5f, 1.5f) else 0f
+        val normalized = if ((safe * 10f).roundToInt() == 0) 0f else safe
+        return String.format(Locale.ROOT, "%+.1f dB/oct", normalized)
+    }
+
     private fun formatBalance(balance: Float): String {
         val safe = if (balance.isFinite()) balance.coerceIn(-1f, 1f) else 0f
         if (abs(safe) < 0.01f) return "0.00 (Center)"
         val side = if (safe < 0f) "L" else "R"
-        val pct = (abs(safe) * 100f).toInt()
+        val pct = (abs(safe) * 100f).roundToInt()
         return String.format(Locale.ROOT, "%+.2f (%s %d%%)", safe, side, pct)
     }
 

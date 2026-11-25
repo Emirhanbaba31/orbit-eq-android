@@ -2,6 +2,7 @@ package com.orbiteq.app.data
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -11,6 +12,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.orbiteq.app.dsp.AppRuleResolver
+import com.orbiteq.app.model.DeEsserMode
 import com.orbiteq.app.model.MbcMode
 import com.orbiteq.app.model.OrbitSettings
 import com.orbiteq.app.model.OrbitThemeMode
@@ -61,37 +63,7 @@ class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
         appContext.orbitDataStore.edit { prefs ->
             val current = decodeSettings(prefs)
             val updated = transform(current)
-            val resolvedMbcMode = updated.mbcMode
-            val balance = finiteOrDefault(updated.channelBalance, 0f).coerceIn(-1.0f, 1.0f)
-
-            prefs[Keys.POWER_ENABLED] = updated.powerEnabled
-            prefs[Keys.BYPASSED] = updated.bypassed
-            prefs[Keys.SELECTED_MODE] = updated.selectedMode.name
-            prefs[Keys.INTENSITY_PERCENT] = updated.intensityPercent.coerceIn(0, 100)
-            prefs[Keys.BASS_MACRO_DB] = finiteOrDefault(updated.bassMacroDb, 2.0f)
-            prefs[Keys.AIR_MACRO_DB] = finiteOrDefault(updated.airMacroDb, 1.5f)
-            prefs[Keys.DYNAMIC_LOUDNESS] = updated.dynamicLoudness
-            prefs[Keys.MBC_MODE] = resolvedMbcMode.name
-            prefs[Keys.MBC_ENABLED] = resolvedMbcMode != MbcMode.OFF
-            prefs[Keys.SUBSONIC_FILTER_ENABLED] = updated.subsonicFilterEnabled
-            prefs[Keys.TRUE_HEADROOM_MODE] = updated.trueHeadroomMode
-            prefs[Keys.CHANNEL_BALANCE] = if (balance == 0f) 0f else balance
-            prefs[Keys.RESPONSE_SPEED] = updated.responseSpeed.name
-            prefs[Keys.MANUAL_TRIMS_JSON] = HistoryCodec.encodeTrims(updated.manualTrimsDb)
-            prefs[Keys.THEME_MODE] = updated.themeMode.name
-            prefs[Keys.SESSION_MODE] = updated.sessionMode.name
-            prefs[Keys.Q30_TIP_DISMISSED] = updated.q30TipDismissed
-            prefs[Keys.APP_RULES_JSON] = HistoryCodec.encodeAppRules(updated.appRules)
-            prefs[Keys.PINNED_TRACKS_JSON] = HistoryCodec.encodePinnedTracks(updated.pinnedTracks)
-            prefs[Keys.DEVICE_PROFILES_JSON] = HistoryCodec.encodeDeviceProfiles(updated.deviceProfiles)
-            prefs[Keys.DEVICE_DEFAULT_MODES_JSON] = HistoryCodec.encodeDeviceModes(updated.deviceDefaultModes)
-            prefs[Keys.CUSTOM_PRESETS_JSON] = HistoryCodec.encodeCustomPresets(updated.customPresets)
-            prefs[Keys.CUSTOM_HEADPHONE_PROFILES_JSON] = HistoryCodec.encodeCustomHeadphoneProfiles(
-                updated.customHeadphoneProfiles,
-            )
-            prefs[Keys.DEVICE_CUSTOM_PROFILE_IDS_JSON] = HistoryCodec.encodeStringMap(
-                updated.deviceCustomProfileIds,
-            )
+            encodeSettings(prefs, updated)
         }
     }
 
@@ -128,9 +100,54 @@ class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
         val CUSTOM_HEADPHONE_PROFILES_JSON = stringPreferencesKey("custom_headphone_profiles_json")
         val DEVICE_CUSTOM_PROFILE_IDS_JSON = stringPreferencesKey("device_custom_profile_ids_json")
         val RECENT_HISTORY_JSON = stringPreferencesKey("recent_history_json")
+        val TONE_TILT_DB_PER_OCT = floatPreferencesKey("tone_tilt_db_per_oct")
+        val DE_ESSER_MODE = stringPreferencesKey("de_esser_mode")
+        val LOUDNESS_MATCHED_BYPASS = booleanPreferencesKey("loudness_matched_bypass")
     }
 
     internal companion object {
+
+        private const val MIN_TONE_TILT_DB_PER_OCT = -1.5f
+        private const val MAX_TONE_TILT_DB_PER_OCT = 1.5f
+
+        internal fun encodeSettings(prefs: MutablePreferences, updated: OrbitSettings) {
+            val resolvedMbcMode = updated.mbcMode
+            val balance = finiteOrDefault(updated.channelBalance, 0f).coerceIn(-1.0f, 1.0f)
+            val toneTilt = finiteOrDefault(updated.toneTiltDbPerOct, 0f)
+                .coerceIn(MIN_TONE_TILT_DB_PER_OCT, MAX_TONE_TILT_DB_PER_OCT)
+
+            prefs[Keys.POWER_ENABLED] = updated.powerEnabled
+            prefs[Keys.BYPASSED] = updated.bypassed
+            prefs[Keys.SELECTED_MODE] = updated.selectedMode.name
+            prefs[Keys.INTENSITY_PERCENT] = updated.intensityPercent.coerceIn(0, 100)
+            prefs[Keys.BASS_MACRO_DB] = finiteOrDefault(updated.bassMacroDb, 2.0f)
+            prefs[Keys.AIR_MACRO_DB] = finiteOrDefault(updated.airMacroDb, 1.5f)
+            prefs[Keys.DYNAMIC_LOUDNESS] = updated.dynamicLoudness
+            prefs[Keys.MBC_MODE] = resolvedMbcMode.name
+            prefs[Keys.MBC_ENABLED] = resolvedMbcMode != MbcMode.OFF
+            prefs[Keys.SUBSONIC_FILTER_ENABLED] = updated.subsonicFilterEnabled
+            prefs[Keys.TRUE_HEADROOM_MODE] = updated.trueHeadroomMode
+            prefs[Keys.CHANNEL_BALANCE] = if (balance == 0f) 0f else balance
+            prefs[Keys.RESPONSE_SPEED] = updated.responseSpeed.name
+            prefs[Keys.MANUAL_TRIMS_JSON] = HistoryCodec.encodeTrims(updated.manualTrimsDb)
+            prefs[Keys.THEME_MODE] = updated.themeMode.name
+            prefs[Keys.SESSION_MODE] = updated.sessionMode.name
+            prefs[Keys.Q30_TIP_DISMISSED] = updated.q30TipDismissed
+            prefs[Keys.APP_RULES_JSON] = HistoryCodec.encodeAppRules(updated.appRules)
+            prefs[Keys.PINNED_TRACKS_JSON] = HistoryCodec.encodePinnedTracks(updated.pinnedTracks)
+            prefs[Keys.DEVICE_PROFILES_JSON] = HistoryCodec.encodeDeviceProfiles(updated.deviceProfiles)
+            prefs[Keys.DEVICE_DEFAULT_MODES_JSON] = HistoryCodec.encodeDeviceModes(updated.deviceDefaultModes)
+            prefs[Keys.CUSTOM_PRESETS_JSON] = HistoryCodec.encodeCustomPresets(updated.customPresets)
+            prefs[Keys.CUSTOM_HEADPHONE_PROFILES_JSON] = HistoryCodec.encodeCustomHeadphoneProfiles(
+                updated.customHeadphoneProfiles,
+            )
+            prefs[Keys.DEVICE_CUSTOM_PROFILE_IDS_JSON] = HistoryCodec.encodeStringMap(
+                updated.deviceCustomProfileIds,
+            )
+            prefs[Keys.TONE_TILT_DB_PER_OCT] = if (toneTilt == 0f) 0f else toneTilt
+            prefs[Keys.DE_ESSER_MODE] = updated.deEsserMode.name
+            prefs[Keys.LOUDNESS_MATCHED_BYPASS] = updated.loudnessMatchedBypass
+        }
 
         internal fun migrateMbcMode(mbcModeRaw: String?, legacyMbcEnabled: Boolean?): MbcMode {
             val parsed = mbcModeRaw?.trim()?.takeIf { it.isNotEmpty() }?.let { raw ->
@@ -155,6 +172,8 @@ class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
                 legacyMbcEnabled = prefs[Keys.MBC_ENABLED],
             )
             val balance = finiteOrDefault(prefs[Keys.CHANNEL_BALANCE], 0f).coerceIn(-1.0f, 1.0f)
+            val toneTilt = finiteOrDefault(prefs[Keys.TONE_TILT_DB_PER_OCT], 0f)
+                .coerceIn(MIN_TONE_TILT_DB_PER_OCT, MAX_TONE_TILT_DB_PER_OCT)
 
             return OrbitSettings(
                 powerEnabled = prefs[Keys.POWER_ENABLED] ?: false,
@@ -185,12 +204,15 @@ class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
                 deviceCustomProfileIds = HistoryCodec.decodeStringMap(
                     prefs[Keys.DEVICE_CUSTOM_PROFILE_IDS_JSON],
                 ),
+                toneTiltDbPerOct = if (toneTilt == 0f) 0f else toneTilt,
+                deEsserMode = parseEnumOrDefault(prefs[Keys.DE_ESSER_MODE], DeEsserMode.GENTLE),
+                loudnessMatchedBypass = prefs[Keys.LOUDNESS_MATCHED_BYPASS] ?: true,
             )
         }
 
         private inline fun <reified E : Enum<E>> parseEnumOrDefault(raw: String?, default: E): E {
-            if (raw.isNullOrBlank()) return default
-            return enumValues<E>().firstOrNull { it.name == raw } ?: default
+            val trimmed = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return default
+            return enumValues<E>().firstOrNull { it.name == trimmed } ?: default
         }
 
         private fun finiteOrDefault(value: Float?, default: Float): Float =

@@ -1,6 +1,7 @@
 package com.orbiteq.app.data
 
 import com.orbiteq.app.model.ConnectedOutputDevice
+import com.orbiteq.app.model.DeEsserMode
 import com.orbiteq.app.model.DspBackend
 import com.orbiteq.app.model.EngineStatus
 import com.orbiteq.app.model.HeadphoneProfile
@@ -140,6 +141,122 @@ class DiagnosticsFormatterTest {
             assertTrue(report.contains("-1.5"))
             assertTrue(report.contains("-0.5"))
             assertFalse(report.contains("-1,5"))
+        } finally {
+            Locale.setDefault(originalLocale)
+        }
+    }
+
+    @Test
+    fun formatIncludesV3ToneTiltDeEsserLoudnessMatchedBypassMbcBandsAndRoundsBalance() {
+        val uiState = OrbitUiState(
+            settings = OrbitSettings(
+                powerEnabled = true,
+                bypassed = false,
+                selectedMode = PleasureMode.NOVA,
+                intensityPercent = 80,
+                mbcMode = MbcMode.SUBTLE,
+                subsonicFilterEnabled = true,
+                trueHeadroomMode = false,
+                channelBalance = 0.29f,
+                toneTiltDbPerOct = -0.6f,
+                deEsserMode = DeEsserMode.STRONG,
+                loudnessMatchedBypass = false,
+            ),
+            activeMode = PleasureMode.NOVA,
+            modeSource = ModeResolutionSource.GLOBAL_DEFAULT,
+            activeHeadphoneProfile = HeadphoneProfile.Q30_CLEAN_BASE,
+            telemetry = LiveAudioTelemetry(
+                engineStatus = EngineStatus.AUTO_FFT_LOCKED,
+                dspBackend = DspBackend.DYNAMICS_PROCESSING,
+                activeSessionId = 108,
+                sampleRateHz = 48000,
+                preEqBandCount = 31,
+                mbcBandCount = 5,
+            ),
+        )
+
+        val report = DiagnosticsFormatter.format(
+            DiagnosticsSnapshot(
+                versionName = "3.0.0",
+                androidSdk = 35,
+                deviceModel = "Pixel 9",
+                uiState = uiState,
+                hasRecordAudio = true,
+                hasNotificationAccess = true,
+                hasPostNotifications = true,
+                isBatteryExempt = true,
+            ),
+        )
+
+        assertTrue(report.contains("31-band PreEQ / 5-band MBC"))
+        assertTrue(report.contains("Tone Tilt: -0.6 dB/oct"))
+        assertTrue(report.contains("De-Esser: STRONG"))
+        assertTrue(report.contains("Loudness-Matched A/B: OFF"))
+        assertTrue(report.contains("+0.29 (R 29%)"))
+        assertFalse(report.contains("R 28%"))
+    }
+
+    @Test
+    fun formatHandlesFallback4BandMbcZeroMbcNegativeBalanceRoundingAndTurkishLocale() {
+        val originalLocale = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"))
+
+            val fallbackReport = DiagnosticsFormatter.format(
+                DiagnosticsSnapshot(
+                    versionName = "3.0.0",
+                    androidSdk = 34,
+                    deviceModel = "Pixel 8",
+                    uiState = OrbitUiState(
+                        settings = OrbitSettings(
+                            channelBalance = -0.29f,
+                            toneTiltDbPerOct = 0f,
+                            deEsserMode = DeEsserMode.GENTLE,
+                            loudnessMatchedBypass = true,
+                        ),
+                        telemetry = LiveAudioTelemetry(
+                            dspBackend = DspBackend.DYNAMICS_PROCESSING,
+                            preEqBandCount = 10,
+                            mbcBandCount = 4,
+                        ),
+                    ),
+                    hasRecordAudio = true,
+                    hasNotificationAccess = true,
+                    hasPostNotifications = true,
+                    isBatteryExempt = false,
+                ),
+            )
+
+            assertTrue(fallbackReport.contains("10-band PreEQ / 4-band MBC"))
+            assertTrue(fallbackReport.contains("Tone Tilt: +0.0 dB/oct"))
+            assertTrue(fallbackReport.contains("De-Esser: GENTLE"))
+            assertTrue(fallbackReport.contains("Loudness-Matched A/B: ON"))
+            assertTrue(fallbackReport.contains("-0.29 (L 29%)"))
+            assertFalse(fallbackReport.contains("L 28%"))
+
+            val legacyReport = DiagnosticsFormatter.format(
+                DiagnosticsSnapshot(
+                    versionName = "3.0.0",
+                    androidSdk = 28,
+                    deviceModel = "Legacy Device",
+                    uiState = OrbitUiState(
+                        settings = OrbitSettings(toneTiltDbPerOct = -0.0f),
+                        telemetry = LiveAudioTelemetry(
+                            dspBackend = DspBackend.LEGACY_EQ,
+                            preEqBandCount = 10,
+                            mbcBandCount = 0,
+                        ),
+                    ),
+                    hasRecordAudio = true,
+                    hasNotificationAccess = false,
+                    hasPostNotifications = true,
+                    isBatteryExempt = false,
+                ),
+            )
+
+            assertTrue(legacyReport.contains("LEGACY_EQ (10-band PreEQ)"))
+            assertFalse(legacyReport.contains("0-band MBC"))
+            assertTrue(legacyReport.contains("Tone Tilt: +0.0 dB/oct"))
         } finally {
             Locale.setDefault(originalLocale)
         }

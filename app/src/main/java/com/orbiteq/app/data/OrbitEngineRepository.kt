@@ -9,6 +9,7 @@ import com.orbiteq.app.model.AppRuleAction
 import com.orbiteq.app.model.ConnectedOutputDevice
 import com.orbiteq.app.model.CustomHeadphoneProfile
 import com.orbiteq.app.model.CustomPreset
+import com.orbiteq.app.model.DeEsserMode
 import com.orbiteq.app.model.EngineStatus
 import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.LiveAudioTelemetry
@@ -48,6 +49,8 @@ object OrbitEngineRepository {
     private const val MAX_TRIM_DB = 8.0f
     private const val MIN_MACRO_DB = -6.0f
     private const val MAX_MACRO_DB = 8.0f
+    private const val MIN_TONE_TILT_DB_PER_OCT = -1.5f
+    private const val MAX_TONE_TILT_DB_PER_OCT = 1.5f
     private const val MAX_CUSTOM_HEADROOM_DB = 15.0f
     private const val SPECTRAL_TAG_STABLE_FRAMES = 5
     private const val DEFAULT_INITIAL_LOAD_TIMEOUT_MS = 1500L
@@ -546,6 +549,20 @@ object OrbitEngineRepository {
         mutateSettings { settings -> settings.copy(channelBalance = normalized) }
     }
 
+    fun setToneTiltDbPerOct(tiltDbPerOct: Float) {
+        val clamped = sanitizeAndClamp(tiltDbPerOct, MIN_TONE_TILT_DB_PER_OCT, MAX_TONE_TILT_DB_PER_OCT)
+        val normalized = if (clamped == 0f) 0f else clamped
+        mutateSettings { settings -> settings.copy(toneTiltDbPerOct = normalized) }
+    }
+
+    fun setDeEsserMode(mode: DeEsserMode) {
+        mutateSettings { settings -> settings.copy(deEsserMode = mode) }
+    }
+
+    fun setLoudnessMatchedBypass(enabled: Boolean) {
+        mutateSettings { settings -> settings.copy(loudnessMatchedBypass = enabled) }
+    }
+
     fun setResponseSpeed(speed: ResponseSpeed) {
         mutateSettings { settings -> settings.copy(responseSpeed = speed) }
     }
@@ -637,12 +654,16 @@ object OrbitEngineRepository {
         extraHeadroomDb: Float = 0f,
         sourceLabel: String = "AutoEQ",
         assignToCurrentDevice: Boolean = true,
+        preferredId: String? = null,
     ): CustomHeadphoneProfile? {
         val trimmedName = name.trim()
         if (trimmedName.isEmpty()) return null
 
+        val resolvedId = preferredId?.trim()?.takeIf { it.isNotEmpty() }
+            ?: UUID.randomUUID().toString()
+
         val profile = CustomHeadphoneProfile(
-            id = UUID.randomUUID().toString(),
+            id = resolvedId,
             name = trimmedName,
             gains31Db = HistoryCodec.normalizeGains31(gains31Db),
             extraHeadroomDb = sanitizeAndClamp(extraHeadroomDb, 0f, MAX_CUSTOM_HEADROOM_DB).let {
@@ -660,7 +681,7 @@ object OrbitEngineRepository {
                 prev.settings.deviceCustomProfileIds
             }
             val nextSettings = prev.settings.copy(
-                customHeadphoneProfiles = prev.settings.customHeadphoneProfiles + profile,
+                customHeadphoneProfiles = upsertCustomProfile(prev.settings.customHeadphoneProfiles, profile),
                 deviceCustomProfileIds = nextBindings,
             )
             _uiState.value = recomputeDerivedState(prev.copy(settings = nextSettings))
@@ -671,7 +692,7 @@ object OrbitEngineRepository {
                     current.deviceCustomProfileIds
                 }
                 current.copy(
-                    customHeadphoneProfiles = current.customHeadphoneProfiles + profile,
+                    customHeadphoneProfiles = upsertCustomProfile(current.customHeadphoneProfiles, profile),
                     deviceCustomProfileIds = updatedBindings,
                 )
             }
@@ -954,4 +975,21 @@ object OrbitEngineRepository {
 
     private fun sanitizeAndClamp(value: Float, min: Float, max: Float): Float =
         if (value.isFinite()) value.coerceIn(min, max) else 0f
+
+    private fun upsertCustomProfile(
+        existing: List<CustomHeadphoneProfile>,
+        profile: CustomHeadphoneProfile,
+    ): List<CustomHeadphoneProfile> {
+        val firstIndex = existing.indexOfFirst { it.id == profile.id }
+        if (firstIndex < 0) return existing + profile
+        val result = ArrayList<CustomHeadphoneProfile>(existing.size)
+        existing.forEachIndexed { index, item ->
+            if (index == firstIndex) {
+                result.add(profile)
+            } else if (item.id != profile.id) {
+                result.add(item)
+            }
+        }
+        return result
+    }
 }
