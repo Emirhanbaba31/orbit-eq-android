@@ -3,6 +3,7 @@ package com.orbiteq.app.data
 import com.orbiteq.app.dsp.AppRuleResolver
 import com.orbiteq.app.model.AppRule
 import com.orbiteq.app.model.AppRuleAction
+import com.orbiteq.app.model.CustomHeadphoneProfile
 import com.orbiteq.app.model.CustomPreset
 import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.PleasureMode
@@ -13,7 +14,10 @@ import org.json.JSONObject
 object HistoryCodec {
 
     const val MAX_HISTORY_ITEMS = 50
+    const val PRE_EQ_BAND_COUNT = 31
     private const val BAND_COUNT = 10
+    private const val MIN_GAIN_DB = -15f
+    private const val MAX_GAIN_DB = 15f
 
     fun appendHistory(
         existing: List<TrackActivityEntry>,
@@ -138,6 +142,34 @@ object HistoryCodec {
 
     fun decodeDeviceModes(json: String?): Map<String, PleasureMode> = decodeEnumMap(json)
 
+    fun encodeStringMap(map: Map<String, String>): String {
+        val root = JSONObject()
+        for ((key, value) in map) {
+            if (key.isNotBlank() && value.isNotBlank()) {
+                root.put(key, value)
+            }
+        }
+        return root.toString()
+    }
+
+    fun decodeStringMap(json: String?): Map<String, String> {
+        val trimmed = json?.trim()?.takeIf { it.isNotEmpty() } ?: return emptyMap()
+        return try {
+            val root = JSONObject(trimmed)
+            val result = LinkedHashMap<String, String>()
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                if (key.isBlank()) continue
+                val value = (root.opt(key) as? String)?.takeIf { it.isNotBlank() } ?: continue
+                result[key] = value
+            }
+            result
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
     fun encodeCustomPresets(list: List<CustomPreset>): String {
         val array = JSONArray()
         for (preset in list) {
@@ -149,7 +181,7 @@ object HistoryCodec {
             obj.put("intensity", preset.intensity.coerceIn(0, 100))
             obj.put("bassMacroDb", finiteOrZero(preset.bassMacroDb).toDouble())
             obj.put("airMacroDb", finiteOrZero(preset.airMacroDb).toDouble())
-            obj.put("trimsDb", trimsToJsonArray(preset.trimsDb))
+            obj.put("trimsDb", floatListToJsonArray(normalizeTrims(preset.trimsDb)))
             array.put(obj)
         }
         return array.toString()
@@ -174,7 +206,7 @@ object HistoryCodec {
                         intensity = obj.optInt("intensity", 78).coerceIn(0, 100),
                         bassMacroDb = obj.safeFloat("bassMacroDb"),
                         airMacroDb = obj.safeFloat("airMacroDb"),
-                        trimsDb = jsonArrayToTrims(obj.optJSONArray("trimsDb")),
+                        trimsDb = jsonArrayToFloatList(obj.optJSONArray("trimsDb"), BAND_COUNT),
                     ),
                 )
             }
@@ -184,43 +216,116 @@ object HistoryCodec {
         }
     }
 
-    fun encodeTrims(trims: List<Float>): String = trimsToJsonArray(trims).toString()
+    fun encodeCustomHeadphoneProfiles(list: List<CustomHeadphoneProfile>): String {
+        val array = JSONArray()
+        for (profile in list) {
+            if (profile.id.isBlank() || profile.name.isBlank()) continue
+            val obj = JSONObject()
+            obj.put("id", profile.id)
+            obj.put("name", profile.name)
+            obj.put("gains31Db", floatListToJsonArray(normalizeGains31(profile.gains31Db)))
+            obj.put("extraHeadroomDb", sanitizeHeadroom(profile.extraHeadroomDb).toDouble())
+            obj.put("sourceLabel", profile.sourceLabel.trim().ifEmpty { "AutoEQ" })
+            array.put(obj)
+        }
+        return array.toString()
+    }
+
+    fun decodeCustomHeadphoneProfiles(json: String?): List<CustomHeadphoneProfile> {
+        val trimmed = json?.trim()?.takeIf { it.isNotEmpty() } ?: return emptyList()
+        return try {
+            val array = JSONArray(trimmed)
+            val result = ArrayList<CustomHeadphoneProfile>(array.length())
+            for (i in 0 until array.length()) {
+                val obj = array.optJSONObject(i) ?: continue
+                val id = obj.safeString("id")
+                val name = obj.safeString("name")
+                if (id.isBlank() || name.isBlank()) continue
+                result.add(
+                    CustomHeadphoneProfile(
+                        id = id,
+                        name = name,
+                        gains31Db = jsonArrayToFloatList(
+                            array = obj.optJSONArray("gains31Db"),
+                            count = PRE_EQ_BAND_COUNT,
+                            minValue = MIN_GAIN_DB,
+                            maxValue = MAX_GAIN_DB,
+                        ),
+                        extraHeadroomDb = sanitizeHeadroom(obj.safeFloat("extraHeadroomDb")),
+                        sourceLabel = obj.safeString("sourceLabel", "AutoEQ").trim().ifEmpty { "AutoEQ" },
+                    ),
+                )
+            }
+            result
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun encodeTrims(trims: List<Float>): String = floatListToJsonArray(normalizeTrims(trims)).toString()
 
     fun decodeTrims(json: String?): List<Float> {
-        val trimmed = json?.trim()?.takeIf { it.isNotEmpty() } ?: return zeroTrims()
+        val trimmed = json?.trim()?.takeIf { it.isNotEmpty() } ?: return zeroList(BAND_COUNT)
         return try {
-            jsonArrayToTrims(JSONArray(trimmed))
+            jsonArrayToFloatList(JSONArray(trimmed), BAND_COUNT)
         } catch (_: Exception) {
-            zeroTrims()
+            zeroList(BAND_COUNT)
         }
     }
 
     fun normalizeTrims(trims: List<Float>): List<Float> =
         List(BAND_COUNT) { index -> finiteOrZero(trims.getOrElse(index) { 0f }) }
 
-    private fun trimsToJsonArray(trims: List<Float>): JSONArray {
+    fun normalizeGains31(gains: List<Float>): List<Float> =
+        List(PRE_EQ_BAND_COUNT) { index ->
+            sanitizeClampedFinite(gains.getOrElse(index) { 0f }, MIN_GAIN_DB, MAX_GAIN_DB)
+        }
+
+    private fun floatListToJsonArray(values: List<Float>): JSONArray {
         val array = JSONArray()
-        for (value in normalizeTrims(trims)) {
-            array.put(value.toDouble())
+        for (value in values) {
+            array.put(finiteOrZero(value).toDouble())
         }
         return array
     }
 
-    private fun jsonArrayToTrims(array: JSONArray?): List<Float> {
-        if (array == null) return zeroTrims()
-        return List(BAND_COUNT) { index ->
+    private fun jsonArrayToFloatList(
+        array: JSONArray?,
+        count: Int,
+        minValue: Float? = null,
+        maxValue: Float? = null,
+    ): List<Float> {
+        if (array == null) return zeroList(count)
+        return List(count) { index ->
             if (index >= array.length() || array.isNull(index)) {
                 0f
             } else {
                 val raw = array.optDouble(index, Double.NaN).toFloat()
-                if (raw.isFinite()) raw else 0f
+                if (!raw.isFinite()) {
+                    0f
+                } else if (minValue != null && maxValue != null) {
+                    val clamped = raw.coerceIn(minValue, maxValue)
+                    if (clamped == 0f) 0f else clamped
+                } else {
+                    if (raw == 0f) 0f else raw
+                }
             }
         }
     }
 
-    private fun zeroTrims(): List<Float> = List(BAND_COUNT) { 0f }
+    private fun zeroList(count: Int): List<Float> = List(count) { 0f }
 
-    private fun finiteOrZero(value: Float): Float = if (value.isFinite()) value else 0f
+    private fun finiteOrZero(value: Float): Float =
+        if (value.isFinite()) (if (value == 0f) 0f else value) else 0f
+
+    private fun sanitizeClampedFinite(value: Float, min: Float, max: Float): Float {
+        if (!value.isFinite()) return 0f
+        val clamped = value.coerceIn(min, max)
+        return if (clamped == 0f) 0f else clamped
+    }
+
+    private fun sanitizeHeadroom(value: Float): Float =
+        sanitizeClampedFinite(value, 0f, MAX_GAIN_DB)
 
     private fun <E : Enum<E>> encodeEnumMap(map: Map<String, E>): String {
         val root = JSONObject()
@@ -256,7 +361,7 @@ object HistoryCodec {
     }
 
     private fun JSONObject.safeString(key: String, default: String = ""): String =
-        if (isNull(key)) default else optString(key, default)
+        (opt(key) as? String) ?: default
 
     private fun JSONObject.safeFloat(key: String, default: Float = 0f): Float {
         if (isNull(key)) return default

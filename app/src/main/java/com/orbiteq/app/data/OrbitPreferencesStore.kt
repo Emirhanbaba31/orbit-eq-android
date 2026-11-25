@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.orbiteq.app.dsp.AppRuleResolver
+import com.orbiteq.app.model.MbcMode
 import com.orbiteq.app.model.OrbitSettings
 import com.orbiteq.app.model.OrbitThemeMode
 import com.orbiteq.app.model.PleasureMode
@@ -46,7 +47,7 @@ class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
         }
 
     override val settingsFlow: Flow<OrbitSettings> = preferencesFlow
-        .map { prefs -> prefs.toOrbitSettings() }
+        .map { prefs -> decodeSettings(prefs) }
         .distinctUntilChanged()
 
     override val historyFlow: Flow<List<TrackActivityEntry>> = preferencesFlow
@@ -58,8 +59,11 @@ class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
 
     override suspend fun updateSettings(transform: (OrbitSettings) -> OrbitSettings) {
         appContext.orbitDataStore.edit { prefs ->
-            val current = prefs.toOrbitSettings()
+            val current = decodeSettings(prefs)
             val updated = transform(current)
+            val resolvedMbcMode = updated.mbcMode
+            val balance = finiteOrDefault(updated.channelBalance, 0f).coerceIn(-1.0f, 1.0f)
+
             prefs[Keys.POWER_ENABLED] = updated.powerEnabled
             prefs[Keys.BYPASSED] = updated.bypassed
             prefs[Keys.SELECTED_MODE] = updated.selectedMode.name
@@ -67,7 +71,11 @@ class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
             prefs[Keys.BASS_MACRO_DB] = finiteOrDefault(updated.bassMacroDb, 2.0f)
             prefs[Keys.AIR_MACRO_DB] = finiteOrDefault(updated.airMacroDb, 1.5f)
             prefs[Keys.DYNAMIC_LOUDNESS] = updated.dynamicLoudness
-            prefs[Keys.MBC_ENABLED] = updated.mbcEnabled
+            prefs[Keys.MBC_MODE] = resolvedMbcMode.name
+            prefs[Keys.MBC_ENABLED] = resolvedMbcMode != MbcMode.OFF
+            prefs[Keys.SUBSONIC_FILTER_ENABLED] = updated.subsonicFilterEnabled
+            prefs[Keys.TRUE_HEADROOM_MODE] = updated.trueHeadroomMode
+            prefs[Keys.CHANNEL_BALANCE] = if (balance == 0f) 0f else balance
             prefs[Keys.RESPONSE_SPEED] = updated.responseSpeed.name
             prefs[Keys.MANUAL_TRIMS_JSON] = HistoryCodec.encodeTrims(updated.manualTrimsDb)
             prefs[Keys.THEME_MODE] = updated.themeMode.name
@@ -78,6 +86,12 @@ class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
             prefs[Keys.DEVICE_PROFILES_JSON] = HistoryCodec.encodeDeviceProfiles(updated.deviceProfiles)
             prefs[Keys.DEVICE_DEFAULT_MODES_JSON] = HistoryCodec.encodeDeviceModes(updated.deviceDefaultModes)
             prefs[Keys.CUSTOM_PRESETS_JSON] = HistoryCodec.encodeCustomPresets(updated.customPresets)
+            prefs[Keys.CUSTOM_HEADPHONE_PROFILES_JSON] = HistoryCodec.encodeCustomHeadphoneProfiles(
+                updated.customHeadphoneProfiles,
+            )
+            prefs[Keys.DEVICE_CUSTOM_PROFILE_IDS_JSON] = HistoryCodec.encodeStringMap(
+                updated.deviceCustomProfileIds,
+            )
         }
     }
 
@@ -88,44 +102,6 @@ class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
         }
     }
 
-    private fun Preferences.toOrbitSettings(): OrbitSettings {
-        val rulesRaw = this[Keys.APP_RULES_JSON]
-        val appRules = if (rulesRaw == null) {
-            AppRuleResolver.defaultAppRules()
-        } else {
-            HistoryCodec.decodeAppRules(rulesRaw)
-        }
-
-        return OrbitSettings(
-            powerEnabled = this[Keys.POWER_ENABLED] ?: false,
-            bypassed = this[Keys.BYPASSED] ?: false,
-            selectedMode = parseEnumOrDefault(this[Keys.SELECTED_MODE], PleasureMode.NOVA),
-            intensityPercent = (this[Keys.INTENSITY_PERCENT] ?: 78).coerceIn(0, 100),
-            bassMacroDb = finiteOrDefault(this[Keys.BASS_MACRO_DB], 2.0f),
-            airMacroDb = finiteOrDefault(this[Keys.AIR_MACRO_DB], 1.5f),
-            dynamicLoudness = this[Keys.DYNAMIC_LOUDNESS] ?: true,
-            mbcEnabled = this[Keys.MBC_ENABLED] ?: true,
-            responseSpeed = parseEnumOrDefault(this[Keys.RESPONSE_SPEED], ResponseSpeed.BALANCED),
-            manualTrimsDb = HistoryCodec.decodeTrims(this[Keys.MANUAL_TRIMS_JSON]),
-            themeMode = parseEnumOrDefault(this[Keys.THEME_MODE], OrbitThemeMode.DEEP_SPACE_HUD),
-            sessionMode = parseEnumOrDefault(this[Keys.SESSION_MODE], SessionAttachmentMode.AUTO),
-            q30TipDismissed = this[Keys.Q30_TIP_DISMISSED] ?: false,
-            appRules = appRules,
-            pinnedTracks = HistoryCodec.decodePinnedTracks(this[Keys.PINNED_TRACKS_JSON]),
-            deviceProfiles = HistoryCodec.decodeDeviceProfiles(this[Keys.DEVICE_PROFILES_JSON]),
-            deviceDefaultModes = HistoryCodec.decodeDeviceModes(this[Keys.DEVICE_DEFAULT_MODES_JSON]),
-            customPresets = HistoryCodec.decodeCustomPresets(this[Keys.CUSTOM_PRESETS_JSON]),
-        )
-    }
-
-    private inline fun <reified E : Enum<E>> parseEnumOrDefault(raw: String?, default: E): E {
-        if (raw.isNullOrBlank()) return default
-        return enumValues<E>().firstOrNull { it.name == raw } ?: default
-    }
-
-    private fun finiteOrDefault(value: Float?, default: Float): Float =
-        if (value != null && value.isFinite()) value else default
-
     private object Keys {
         val POWER_ENABLED = booleanPreferencesKey("power_enabled")
         val BYPASSED = booleanPreferencesKey("bypassed")
@@ -135,6 +111,10 @@ class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
         val AIR_MACRO_DB = floatPreferencesKey("air_macro_db")
         val DYNAMIC_LOUDNESS = booleanPreferencesKey("dynamic_loudness")
         val MBC_ENABLED = booleanPreferencesKey("mbc_enabled")
+        val MBC_MODE = stringPreferencesKey("mbc_mode")
+        val SUBSONIC_FILTER_ENABLED = booleanPreferencesKey("subsonic_filter_enabled")
+        val TRUE_HEADROOM_MODE = booleanPreferencesKey("true_headroom_mode")
+        val CHANNEL_BALANCE = floatPreferencesKey("channel_balance")
         val RESPONSE_SPEED = stringPreferencesKey("response_speed")
         val MANUAL_TRIMS_JSON = stringPreferencesKey("manual_trims_json")
         val THEME_MODE = stringPreferencesKey("theme_mode")
@@ -145,6 +125,75 @@ class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
         val DEVICE_PROFILES_JSON = stringPreferencesKey("device_profiles_json")
         val DEVICE_DEFAULT_MODES_JSON = stringPreferencesKey("device_default_modes_json")
         val CUSTOM_PRESETS_JSON = stringPreferencesKey("custom_presets_json")
+        val CUSTOM_HEADPHONE_PROFILES_JSON = stringPreferencesKey("custom_headphone_profiles_json")
+        val DEVICE_CUSTOM_PROFILE_IDS_JSON = stringPreferencesKey("device_custom_profile_ids_json")
         val RECENT_HISTORY_JSON = stringPreferencesKey("recent_history_json")
+    }
+
+    internal companion object {
+
+        internal fun migrateMbcMode(mbcModeRaw: String?, legacyMbcEnabled: Boolean?): MbcMode {
+            val parsed = mbcModeRaw?.trim()?.takeIf { it.isNotEmpty() }?.let { raw ->
+                MbcMode.entries.firstOrNull { it.name == raw }
+            }
+            if (parsed != null) return parsed
+            return when (legacyMbcEnabled) {
+                false -> MbcMode.OFF
+                true, null -> MbcMode.SUBTLE
+            }
+        }
+
+        internal fun decodeSettings(prefs: Preferences): OrbitSettings {
+            val rulesRaw = prefs[Keys.APP_RULES_JSON]
+            val appRules = if (rulesRaw == null) {
+                AppRuleResolver.defaultAppRules()
+            } else {
+                HistoryCodec.decodeAppRules(rulesRaw)
+            }
+            val mbcMode = migrateMbcMode(
+                mbcModeRaw = prefs[Keys.MBC_MODE],
+                legacyMbcEnabled = prefs[Keys.MBC_ENABLED],
+            )
+            val balance = finiteOrDefault(prefs[Keys.CHANNEL_BALANCE], 0f).coerceIn(-1.0f, 1.0f)
+
+            return OrbitSettings(
+                powerEnabled = prefs[Keys.POWER_ENABLED] ?: false,
+                bypassed = prefs[Keys.BYPASSED] ?: false,
+                selectedMode = parseEnumOrDefault(prefs[Keys.SELECTED_MODE], PleasureMode.NOVA),
+                intensityPercent = (prefs[Keys.INTENSITY_PERCENT] ?: 78).coerceIn(0, 100),
+                bassMacroDb = finiteOrDefault(prefs[Keys.BASS_MACRO_DB], 2.0f),
+                airMacroDb = finiteOrDefault(prefs[Keys.AIR_MACRO_DB], 1.5f),
+                dynamicLoudness = prefs[Keys.DYNAMIC_LOUDNESS] ?: true,
+                mbcEnabled = mbcMode != MbcMode.OFF,
+                responseSpeed = parseEnumOrDefault(prefs[Keys.RESPONSE_SPEED], ResponseSpeed.BALANCED),
+                manualTrimsDb = HistoryCodec.decodeTrims(prefs[Keys.MANUAL_TRIMS_JSON]),
+                themeMode = parseEnumOrDefault(prefs[Keys.THEME_MODE], OrbitThemeMode.DEEP_SPACE_HUD),
+                sessionMode = parseEnumOrDefault(prefs[Keys.SESSION_MODE], SessionAttachmentMode.AUTO),
+                q30TipDismissed = prefs[Keys.Q30_TIP_DISMISSED] ?: false,
+                appRules = appRules,
+                pinnedTracks = HistoryCodec.decodePinnedTracks(prefs[Keys.PINNED_TRACKS_JSON]),
+                deviceProfiles = HistoryCodec.decodeDeviceProfiles(prefs[Keys.DEVICE_PROFILES_JSON]),
+                deviceDefaultModes = HistoryCodec.decodeDeviceModes(prefs[Keys.DEVICE_DEFAULT_MODES_JSON]),
+                customPresets = HistoryCodec.decodeCustomPresets(prefs[Keys.CUSTOM_PRESETS_JSON]),
+                mbcMode = mbcMode,
+                subsonicFilterEnabled = prefs[Keys.SUBSONIC_FILTER_ENABLED] ?: true,
+                trueHeadroomMode = prefs[Keys.TRUE_HEADROOM_MODE] ?: false,
+                channelBalance = if (balance == 0f) 0f else balance,
+                customHeadphoneProfiles = HistoryCodec.decodeCustomHeadphoneProfiles(
+                    prefs[Keys.CUSTOM_HEADPHONE_PROFILES_JSON],
+                ),
+                deviceCustomProfileIds = HistoryCodec.decodeStringMap(
+                    prefs[Keys.DEVICE_CUSTOM_PROFILE_IDS_JSON],
+                ),
+            )
+        }
+
+        private inline fun <reified E : Enum<E>> parseEnumOrDefault(raw: String?, default: E): E {
+            if (raw.isNullOrBlank()) return default
+            return enumValues<E>().firstOrNull { it.name == raw } ?: default
+        }
+
+        private fun finiteOrDefault(value: Float?, default: Float): Float =
+            if (value != null && value.isFinite()) value else default
     }
 }

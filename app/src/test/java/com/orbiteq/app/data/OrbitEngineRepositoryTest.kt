@@ -7,11 +7,15 @@ import com.orbiteq.app.model.ConnectedOutputDevice
 import com.orbiteq.app.model.EngineStatus
 import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.LiveAudioTelemetry
+import com.orbiteq.app.model.MbcMode
 import com.orbiteq.app.model.ModeResolutionSource
 import com.orbiteq.app.model.NowPlayingInfo
 import com.orbiteq.app.model.OrbitSettings
 import com.orbiteq.app.model.PleasureMode
 import com.orbiteq.app.model.TrackActivityEntry
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.preferencesOf
+import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -419,6 +423,234 @@ class OrbitEngineRepositoryTest {
         assertFalse(finalPersisted.powerEnabled)
         assertEquals(64, finalPersisted.intensityPercent)
         assertEquals(finalPersisted, finalUi)
+    }
+
+    @Test
+    fun v1ToV2MbcMigrationHandlesAbsentAndExplicitKeysAcrossLegacyPreferences() {
+        assertEquals(MbcMode.OFF, OrbitPreferencesStore.migrateMbcMode(mbcModeRaw = null, legacyMbcEnabled = false))
+        assertEquals(MbcMode.SUBTLE, OrbitPreferencesStore.migrateMbcMode(mbcModeRaw = null, legacyMbcEnabled = true))
+        assertEquals(MbcMode.SUBTLE, OrbitPreferencesStore.migrateMbcMode(mbcModeRaw = null, legacyMbcEnabled = null))
+        assertEquals(MbcMode.PUNCHY, OrbitPreferencesStore.migrateMbcMode(mbcModeRaw = "PUNCHY", legacyMbcEnabled = false))
+        assertEquals(MbcMode.OFF, OrbitPreferencesStore.migrateMbcMode(mbcModeRaw = "OFF", legacyMbcEnabled = true))
+        assertEquals(MbcMode.OFF, OrbitPreferencesStore.migrateMbcMode(mbcModeRaw = "UNKNOWN", legacyMbcEnabled = false))
+
+        val legacyPrefsOff = preferencesOf(
+            booleanPreferencesKey("mbc_enabled") to false,
+            stringPreferencesKey("app_rules_json") to """{"com.spotify.music":{"packageName":"com.spotify.music","displayName":"Spotify","action":"USE_MODE","mode":"GRAVITY"}}""",
+            stringPreferencesKey("pinned_tracks_json") to """{"com.spotify.music|orbit":"HORIZON"}""",
+        )
+        val migratedOff = OrbitPreferencesStore.decodeSettings(legacyPrefsOff)
+        assertEquals(MbcMode.OFF, migratedOff.mbcMode)
+        assertFalse(migratedOff.mbcEnabled)
+        assertTrue(migratedOff.subsonicFilterEnabled)
+        assertFalse(migratedOff.trueHeadroomMode)
+        assertEquals(0f, migratedOff.channelBalance, 0.0001f)
+        assertEquals(PleasureMode.GRAVITY, migratedOff.appRules["com.spotify.music"]?.mode)
+        assertEquals(PleasureMode.HORIZON, migratedOff.pinnedTracks["com.spotify.music|orbit"])
+
+        val explicitOverridePrefs = preferencesOf(
+            booleanPreferencesKey("mbc_enabled") to false,
+            stringPreferencesKey("mbc_mode") to "PUNCHY",
+        )
+        val migratedPunchy = OrbitPreferencesStore.decodeSettings(explicitOverridePrefs)
+        assertEquals(MbcMode.PUNCHY, migratedPunchy.mbcMode)
+        assertTrue(migratedPunchy.mbcEnabled)
+    }
+
+    @Test
+    fun customHeadphoneProfileImportSelectionDeletionAndBuiltInSwitchWorkCleanly() = runBlocking {
+        val gateway = FakeOrbitPersistenceGateway()
+        OrbitEngineRepository.initForTesting(gateway)
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        val q30Device = ConnectedOutputDevice(
+            name = "Soundcore Life Q30",
+            isBluetooth = true,
+            isSpeaker = false,
+            isSoundcoreQ30 = true,
+        )
+        OrbitEngineRepository.updateConnectedDevice(q30Device)
+        assertNull(OrbitEngineRepository.uiState.value.activeCustomHeadphoneProfile)
+        assertEquals(HeadphoneProfile.Q30_CLEAN_BASE, OrbitEngineRepository.uiState.value.activeHeadphoneProfile)
+
+        val imported = OrbitEngineRepository.importCustomHeadphoneProfile(
+            name = "Q30 Custom Harman",
+            gains31Db = listOf(-4f, -3f, 20f, Float.NaN),
+            extraHeadroomDb = 1.5f,
+            sourceLabel = "AutoEQ",
+            assignToCurrentDevice = true,
+        )
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        assertTrue(imported != null)
+        val profile = imported!!
+        assertEquals(31, profile.gains31Db.size)
+        assertEquals(15f, profile.gains31Db[2], 0.0001f)
+        assertEquals(0f, profile.gains31Db[3], 0.0001f)
+        assertEquals(profile, OrbitEngineRepository.uiState.value.activeCustomHeadphoneProfile)
+        assertEquals(
+            profile.id,
+            gateway.currentSettings().deviceCustomProfileIds["soundcore life q30"],
+        )
+
+        // Switching to speaker drops active custom profile without deleting the Q30 binding
+        OrbitEngineRepository.updateConnectedDevice(
+            ConnectedOutputDevice(name = "Phone Speaker", isBluetooth = false, isSpeaker = true),
+        )
+        assertNull(OrbitEngineRepository.uiState.value.activeCustomHeadphoneProfile)
+        assertEquals(HeadphoneProfile.PHONE_SPEAKER_SAFE, OrbitEngineRepository.uiState.value.activeHeadphoneProfile)
+
+        // Switching back to Q30 restores custom profile
+        OrbitEngineRepository.updateConnectedDevice(q30Device)
+        assertEquals(profile, OrbitEngineRepository.uiState.value.activeCustomHeadphoneProfile)
+
+        // Switching to a built-in HeadphoneProfile clears custom profile binding for current device
+        OrbitEngineRepository.setHeadphoneProfileForCurrentDevice(HeadphoneProfile.Q30_SAFE_STACK)
+        OrbitEngineRepository.flushPersistenceForTesting()
+        assertNull(OrbitEngineRepository.uiState.value.activeCustomHeadphoneProfile)
+        assertEquals(HeadphoneProfile.Q30_SAFE_STACK, OrbitEngineRepository.uiState.value.activeHeadphoneProfile)
+        assertFalse(gateway.currentSettings().deviceCustomProfileIds.containsKey("soundcore life q30"))
+
+        // Re-selecting custom profile works and unknown id is ignored
+        OrbitEngineRepository.selectCustomHeadphoneProfileForCurrentDevice("non-existent")
+        assertNull(OrbitEngineRepository.uiState.value.activeCustomHeadphoneProfile)
+        OrbitEngineRepository.selectCustomHeadphoneProfileForCurrentDevice(profile.id)
+        OrbitEngineRepository.flushPersistenceForTesting()
+        assertEquals(profile, OrbitEngineRepository.uiState.value.activeCustomHeadphoneProfile)
+
+        // Deleting profile cleans up both customHeadphoneProfiles and deviceCustomProfileIds
+        OrbitEngineRepository.deleteCustomHeadphoneProfile(profile.id)
+        OrbitEngineRepository.flushPersistenceForTesting()
+        assertNull(OrbitEngineRepository.uiState.value.activeCustomHeadphoneProfile)
+        assertTrue(gateway.currentSettings().customHeadphoneProfiles.isEmpty())
+        assertTrue(gateway.currentSettings().deviceCustomProfileIds.isEmpty())
+    }
+
+    @Test
+    fun v2MutatorsCycleNextModeAndVisibilityFlagsSyncStateAndPersist() = runBlocking {
+        val gateway = FakeOrbitPersistenceGateway()
+        OrbitEngineRepository.initForTesting(gateway)
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        OrbitEngineRepository.setMbcMode(MbcMode.OFF)
+        OrbitEngineRepository.setSubsonicFilterEnabled(false)
+        OrbitEngineRepository.setTrueHeadroomMode(true)
+        OrbitEngineRepository.setChannelBalance(2.5f)
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        var settings = OrbitEngineRepository.uiState.value.settings
+        assertEquals(MbcMode.OFF, settings.mbcMode)
+        assertFalse(settings.mbcEnabled)
+        assertFalse(settings.subsonicFilterEnabled)
+        assertTrue(settings.trueHeadroomMode)
+        assertEquals(1.0f, settings.channelBalance, 0.0001f)
+        assertEquals(settings, gateway.currentSettings())
+
+        // Pre-flight ruling: legacy setMbcEnabled delegates to setMbcMode
+        OrbitEngineRepository.setMbcEnabled(true)
+        OrbitEngineRepository.setChannelBalance(-2.5f)
+        OrbitEngineRepository.flushPersistenceForTesting()
+        settings = OrbitEngineRepository.uiState.value.settings
+        assertEquals(MbcMode.SUBTLE, settings.mbcMode)
+        assertTrue(settings.mbcEnabled)
+        assertEquals(-1.0f, settings.channelBalance, 0.0001f)
+
+        OrbitEngineRepository.setMbcEnabled(false)
+        OrbitEngineRepository.setChannelBalance(Float.NaN)
+        OrbitEngineRepository.flushPersistenceForTesting()
+        settings = OrbitEngineRepository.uiState.value.settings
+        assertEquals(MbcMode.OFF, settings.mbcMode)
+        assertFalse(settings.mbcEnabled)
+        assertEquals(0f, settings.channelBalance, 0.0001f)
+
+        // cycleNextMode cycles NOVA -> GRAVITY -> HORIZON -> ECLIPSE -> COMMS -> NOVA
+        val visited = mutableListOf<PleasureMode>()
+        repeat(5) {
+            OrbitEngineRepository.cycleNextMode()
+            visited.add(OrbitEngineRepository.uiState.value.activeMode)
+        }
+        assertEquals(
+            listOf(
+                PleasureMode.GRAVITY,
+                PleasureMode.HORIZON,
+                PleasureMode.ECLIPSE,
+                PleasureMode.COMMS,
+                PleasureMode.NOVA,
+            ),
+            visited,
+        )
+
+        OrbitEngineRepository.setUiVisible(true)
+        assertTrue(OrbitEngineRepository.isUiVisible)
+        OrbitEngineRepository.setUiVisible(false)
+        assertFalse(OrbitEngineRepository.isUiVisible)
+
+        OrbitEngineRepository.updateNowPlayingArtwork(null)
+        assertNull(OrbitEngineRepository.nowPlayingArtwork.value)
+    }
+
+    @Test
+    fun importBackupJsonMergesValidBackupAndLeavesStateUntouchedOnCorruptJson() = runBlocking {
+        val gateway = FakeOrbitPersistenceGateway()
+        OrbitEngineRepository.initForTesting(gateway)
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        OrbitEngineRepository.setPowerEnabled(true)
+        OrbitEngineRepository.setBypassed(true)
+        OrbitEngineRepository.setIntensityPercent(55)
+        OrbitEngineRepository.saveCustomPreset("Local Preset")
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        val stateBeforeCorrupt = OrbitEngineRepository.uiState.value
+        val persistedBeforeCorrupt = gateway.currentSettings()
+
+        assertFalse(OrbitEngineRepository.importBackupJson(""))
+        assertFalse(OrbitEngineRepository.importBackupJson("{not-json"))
+        assertFalse(OrbitEngineRepository.importBackupJson("""{"schemaVersion": 99, "settings": {}}"""))
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        assertEquals(stateBeforeCorrupt, OrbitEngineRepository.uiState.value)
+        assertEquals(persistedBeforeCorrupt, gateway.currentSettings())
+
+        // Create a clean backup from another settings snapshot, then import it
+        val remoteJson = OrbitBackupCodec.encodeBackup(
+            OrbitSettings(
+                powerEnabled = false,
+                bypassed = false,
+                selectedMode = PleasureMode.HORIZON,
+                intensityPercent = 90,
+                mbcMode = MbcMode.PUNCHY,
+                subsonicFilterEnabled = false,
+                trueHeadroomMode = true,
+                channelBalance = 0.25f,
+                appRules = AppRuleResolver.defaultAppRules(),
+                pinnedTracks = mapOf("com.spotify.music|distant star" to PleasureMode.ECLIPSE),
+            ),
+            exportedAtMs = 1_760_000_000_000L,
+        )
+
+        assertTrue(OrbitEngineRepository.importBackupJson(remoteJson))
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        val merged = OrbitEngineRepository.uiState.value.settings
+        assertTrue(merged.powerEnabled)
+        assertTrue(merged.bypassed)
+        assertEquals(PleasureMode.HORIZON, merged.selectedMode)
+        assertEquals(90, merged.intensityPercent)
+        assertEquals(MbcMode.PUNCHY, merged.mbcMode)
+        assertTrue(merged.mbcEnabled)
+        assertFalse(merged.subsonicFilterEnabled)
+        assertTrue(merged.trueHeadroomMode)
+        assertEquals(0.25f, merged.channelBalance, 0.0001f)
+        assertEquals(1, merged.customPresets.size)
+        assertEquals("Local Preset", merged.customPresets[0].name)
+        assertEquals(PleasureMode.ECLIPSE, merged.pinnedTracks["com.spotify.music|distant star"])
+        assertEquals(merged, gateway.currentSettings())
+
+        val exportedRoundTrip = OrbitEngineRepository.exportBackupJson(exportedAtMs = 1_760_000_123_000L)
+        val decodedRoundTrip = OrbitBackupCodec.decodeBackup(exportedRoundTrip)
+        assertTrue(decodedRoundTrip is BackupImportResult.Success)
+        assertEquals(PleasureMode.HORIZON, (decodedRoundTrip as BackupImportResult.Success).payload.selectedMode)
     }
 
     private class FakeOrbitPersistenceGateway(

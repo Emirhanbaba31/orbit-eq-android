@@ -1,14 +1,18 @@
 package com.orbiteq.app.data
 
 import android.content.Context
+import android.graphics.Bitmap
 import com.orbiteq.app.dsp.AppRuleResolver
+import com.orbiteq.app.dsp.PleasureProfiles
 import com.orbiteq.app.model.AppRule
 import com.orbiteq.app.model.AppRuleAction
 import com.orbiteq.app.model.ConnectedOutputDevice
+import com.orbiteq.app.model.CustomHeadphoneProfile
 import com.orbiteq.app.model.CustomPreset
 import com.orbiteq.app.model.EngineStatus
 import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.LiveAudioTelemetry
+import com.orbiteq.app.model.MbcMode
 import com.orbiteq.app.model.NowPlayingInfo
 import com.orbiteq.app.model.OrbitSettings
 import com.orbiteq.app.model.OrbitThemeMode
@@ -41,6 +45,7 @@ object OrbitEngineRepository {
     private const val MAX_TRIM_DB = 8.0f
     private const val MIN_MACRO_DB = -6.0f
     private const val MAX_MACRO_DB = 8.0f
+    private const val MAX_CUSTOM_HEADROOM_DB = 15.0f
     private const val SPECTRAL_TAG_STABLE_FRAMES = 5
 
     private sealed interface SettingsCommand {
@@ -70,6 +75,10 @@ object OrbitEngineRepository {
     @Volatile
     private var session: PersistenceSession? = null
 
+    @Volatile
+    var isUiVisible: Boolean = false
+        private set
+
     private var initialHistoryLoaded = false
     private var stableTagCandidate: String? = null
     private var stableTagStreak: Int = 0
@@ -77,6 +86,9 @@ object OrbitEngineRepository {
 
     private val _uiState = MutableStateFlow(defaultUiState())
     val uiState: StateFlow<OrbitUiState> = _uiState.asStateFlow()
+
+    private val _nowPlayingArtwork = MutableStateFlow<Bitmap?>(null)
+    val nowPlayingArtwork: StateFlow<Bitmap?> = _nowPlayingArtwork.asStateFlow()
 
     fun init(context: Context) {
         if (session != null) return
@@ -131,6 +143,8 @@ object OrbitEngineRepository {
             stableTagCandidate = null
             stableTagStreak = 0
             lastSpectralTrackKey = null
+            isUiVisible = false
+            _nowPlayingArtwork.value = null
             _uiState.value = defaultUiState()
         }
     }
@@ -239,6 +253,14 @@ object OrbitEngineRepository {
                 pendingHistoryWrites.decrementAndGet().coerceAtLeast(0)
             }
         }
+    }
+
+    fun setUiVisible(visible: Boolean) {
+        isUiVisible = visible
+    }
+
+    fun updateNowPlayingArtwork(bitmap: Bitmap?) {
+        _nowPlayingArtwork.value = bitmap
     }
 
     fun updateNowPlaying(info: NowPlayingInfo) {
@@ -410,6 +432,12 @@ object OrbitEngineRepository {
         }
     }
 
+    fun cycleNextMode() {
+        synchronized(stateLock) {
+            selectModeManually(PleasureProfiles.nextMode(_uiState.value.activeMode))
+        }
+    }
+
     fun saveCurrentModeForActiveApp() {
         synchronized(stateLock) {
             val prev = _uiState.value
@@ -456,8 +484,32 @@ object OrbitEngineRepository {
         mutateSettings { settings -> settings.copy(dynamicLoudness = enabled) }
     }
 
+    fun setMbcMode(mode: MbcMode) {
+        mutateSettings { settings ->
+            settings.copy(
+                mbcMode = mode,
+                mbcEnabled = mode != MbcMode.OFF,
+            )
+        }
+    }
+
+    // Preserved until Task 6 migrates OrbitViewModel to setMbcMode(MbcMode).
     fun setMbcEnabled(enabled: Boolean) {
-        mutateSettings { settings -> settings.copy(mbcEnabled = enabled) }
+        setMbcMode(if (enabled) MbcMode.SUBTLE else MbcMode.OFF)
+    }
+
+    fun setSubsonicFilterEnabled(enabled: Boolean) {
+        mutateSettings { settings -> settings.copy(subsonicFilterEnabled = enabled) }
+    }
+
+    fun setTrueHeadroomMode(enabled: Boolean) {
+        mutateSettings { settings -> settings.copy(trueHeadroomMode = enabled) }
+    }
+
+    fun setChannelBalance(balance: Float) {
+        val clamped = sanitizeAndClamp(balance, -1.0f, 1.0f)
+        val normalized = if (clamped == 0f) 0f else clamped
+        mutateSettings { settings -> settings.copy(channelBalance = normalized) }
     }
 
     fun setResponseSpeed(speed: ResponseSpeed) {
@@ -545,19 +597,104 @@ object OrbitEngineRepository {
         }
     }
 
+    fun importCustomHeadphoneProfile(
+        name: String,
+        gains31Db: List<Float>,
+        extraHeadroomDb: Float = 0f,
+        sourceLabel: String = "AutoEQ",
+        assignToCurrentDevice: Boolean = true,
+    ): CustomHeadphoneProfile? {
+        val trimmedName = name.trim()
+        if (trimmedName.isEmpty()) return null
+
+        val profile = CustomHeadphoneProfile(
+            id = UUID.randomUUID().toString(),
+            name = trimmedName,
+            gains31Db = HistoryCodec.normalizeGains31(gains31Db),
+            extraHeadroomDb = sanitizeAndClamp(extraHeadroomDb, 0f, MAX_CUSTOM_HEADROOM_DB).let {
+                if (it == 0f) 0f else it
+            },
+            sourceLabel = sourceLabel.trim().ifEmpty { "AutoEQ" },
+        )
+
+        synchronized(stateLock) {
+            val prev = _uiState.value
+            val deviceKey = currentDeviceKey(prev.connectedDevice)
+            val nextBindings = if (assignToCurrentDevice) {
+                removeNormalizedKey(prev.settings.deviceCustomProfileIds, deviceKey) + (deviceKey to profile.id)
+            } else {
+                prev.settings.deviceCustomProfileIds
+            }
+            val nextSettings = prev.settings.copy(
+                customHeadphoneProfiles = prev.settings.customHeadphoneProfiles + profile,
+                deviceCustomProfileIds = nextBindings,
+            )
+            _uiState.value = recomputeDerivedState(prev.copy(settings = nextSettings))
+            enqueueSettingsTransformLocked { current ->
+                val updatedBindings = if (assignToCurrentDevice) {
+                    removeNormalizedKey(current.deviceCustomProfileIds, deviceKey) + (deviceKey to profile.id)
+                } else {
+                    current.deviceCustomProfileIds
+                }
+                current.copy(
+                    customHeadphoneProfiles = current.customHeadphoneProfiles + profile,
+                    deviceCustomProfileIds = updatedBindings,
+                )
+            }
+            return profile
+        }
+    }
+
+    fun selectCustomHeadphoneProfileForCurrentDevice(profileId: String) {
+        synchronized(stateLock) {
+            val prev = _uiState.value
+            if (prev.settings.customHeadphoneProfiles.none { it.id == profileId }) return
+            val deviceKey = currentDeviceKey(prev.connectedDevice)
+            val nextBindings = removeNormalizedKey(prev.settings.deviceCustomProfileIds, deviceKey) +
+                (deviceKey to profileId)
+            _uiState.value = recomputeDerivedState(
+                prev.copy(settings = prev.settings.copy(deviceCustomProfileIds = nextBindings)),
+            )
+            enqueueSettingsTransformLocked { current ->
+                if (current.customHeadphoneProfiles.none { it.id == profileId }) {
+                    current
+                } else {
+                    current.copy(
+                        deviceCustomProfileIds = removeNormalizedKey(current.deviceCustomProfileIds, deviceKey) +
+                            (deviceKey to profileId),
+                    )
+                }
+            }
+        }
+    }
+
+    fun deleteCustomHeadphoneProfile(profileId: String) {
+        mutateSettings { settings ->
+            settings.copy(
+                customHeadphoneProfiles = settings.customHeadphoneProfiles.filterNot { it.id == profileId },
+                deviceCustomProfileIds = settings.deviceCustomProfileIds.filterValues { it != profileId },
+            )
+        }
+    }
+
     fun setHeadphoneProfileForCurrentDevice(profile: HeadphoneProfile) {
         synchronized(stateLock) {
             val prev = _uiState.value
             val key = currentDeviceKey(prev.connectedDevice)
             val nextProfiles = removeNormalizedKey(prev.settings.deviceProfiles, key) + (key to profile)
+            val nextCustomBindings = removeNormalizedKey(prev.settings.deviceCustomProfileIds, key)
             _uiState.value = recomputeDerivedState(
                 prev.copy(
-                    settings = prev.settings.copy(deviceProfiles = nextProfiles),
+                    settings = prev.settings.copy(
+                        deviceProfiles = nextProfiles,
+                        deviceCustomProfileIds = nextCustomBindings,
+                    ),
                 ),
             )
             enqueueSettingsTransformLocked { current ->
                 current.copy(
                     deviceProfiles = removeNormalizedKey(current.deviceProfiles, key) + (key to profile),
+                    deviceCustomProfileIds = removeNormalizedKey(current.deviceCustomProfileIds, key),
                 )
             }
         }
@@ -639,6 +776,20 @@ object OrbitEngineRepository {
         mutateSettings { settings -> settings.copy(sessionMode = mode) }
     }
 
+    fun exportBackupJson(exportedAtMs: Long = System.currentTimeMillis()): String {
+        val currentSettings = synchronized(stateLock) { _uiState.value.settings }
+        return OrbitBackupCodec.encodeBackup(currentSettings, exportedAtMs)
+    }
+
+    fun importBackupJson(rawJson: String): Boolean {
+        val decoded = OrbitBackupCodec.decodeBackup(rawJson)
+        if (decoded !is BackupImportResult.Success) {
+            return false
+        }
+        mutateSettings { current -> OrbitBackupCodec.mergeInto(current, decoded.payload) }
+        return true
+    }
+
     private fun mutateSettings(transform: (OrbitSettings) -> OrbitSettings) {
         synchronized(stateLock) {
             val prev = _uiState.value
@@ -696,11 +847,19 @@ object OrbitEngineRepository {
             savedDeviceProfiles = state.settings.deviceProfiles,
         )
 
+        val activeCustomProfileId = findNormalizedValue(state.settings.deviceCustomProfileIds, deviceKey)
+        val activeCustomProfile = if (activeCustomProfileId != null) {
+            state.settings.customHeadphoneProfiles.firstOrNull { it.id == activeCustomProfileId }
+        } else {
+            null
+        }
+
         return state.copy(
             activeMode = decision.mode,
             modeSource = decision.source,
             autoBypassedByRule = decision.autoBypassed,
             activeHeadphoneProfile = headphoneProfile,
+            activeCustomHeadphoneProfile = activeCustomProfile,
         )
     }
 

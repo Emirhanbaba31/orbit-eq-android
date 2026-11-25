@@ -3,6 +3,7 @@ package com.orbiteq.app.data
 import com.orbiteq.app.dsp.AppRuleResolver
 import com.orbiteq.app.model.AppRule
 import com.orbiteq.app.model.AppRuleAction
+import com.orbiteq.app.model.CustomHeadphoneProfile
 import com.orbiteq.app.model.CustomPreset
 import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.PleasureMode
@@ -202,5 +203,79 @@ class HistoryCodecTest {
         assertEquals(0f, decodedPresets[0].airMacroDb, 0.0001f)
         assertTrue(decodedPresets[0].trimsDb.all { it.isFinite() })
         assertEquals(1.5f, decodedPresets[0].trimsDb[2], 0.0001f)
+    }
+
+    @Test
+    fun normalizeGains31PadsTruncatesSanitizesNonFiniteAndClampsTo15Db() {
+        assertEquals(31, HistoryCodec.PRE_EQ_BAND_COUNT)
+
+        val shortDirty = listOf(22.5f, -25.0f, Float.NaN, Float.NEGATIVE_INFINITY, -0.0f, 3.25f)
+        val normalizedShort = HistoryCodec.normalizeGains31(shortDirty)
+        assertEquals(31, normalizedShort.size)
+        assertEquals(15f, normalizedShort[0], 0.0001f)
+        assertEquals(-15f, normalizedShort[1], 0.0001f)
+        assertEquals(0f, normalizedShort[2], 0.0001f)
+        assertEquals(0f, normalizedShort[3], 0.0001f)
+        assertEquals(0f, normalizedShort[4], 0.0001f)
+        assertEquals(3.25f, normalizedShort[5], 0.0001f)
+        assertTrue(normalizedShort.drop(6).all { it == 0f })
+
+        val overlong = List(40) { idx -> if (idx == 30) -18f else 2.5f }
+        val normalizedOverlong = HistoryCodec.normalizeGains31(overlong)
+        assertEquals(31, normalizedOverlong.size)
+        assertEquals(-15f, normalizedOverlong[30], 0.0001f)
+        assertTrue(normalizedOverlong.all { it.isFinite() && it in -15f..15f })
+    }
+
+    @Test
+    fun customHeadphoneProfilesAndStringMapRoundTripAndRejectCorruptInputsSafely() {
+        val gains31 = List(31) { idx -> ((idx - 15) * 0.75f).coerceIn(-15f, 15f) }
+        val profiles = listOf(
+            CustomHeadphoneProfile(
+                id = "q30-harman",
+                name = "Soundcore \"Q30\" — ğüşöçıİĞÜŞÖÇ",
+                gains31Db = gains31,
+                extraHeadroomDb = 1.5f,
+                sourceLabel = "AutoEQ",
+            ),
+        )
+
+        val encodedProfiles = HistoryCodec.encodeCustomHeadphoneProfiles(profiles)
+        val decodedProfiles = HistoryCodec.decodeCustomHeadphoneProfiles(encodedProfiles)
+        assertEquals(profiles, decodedProfiles)
+
+        val bindingMap = mapOf(
+            "soundcore life q30" to "q30-harman",
+            "sony wh-1000xm5" to "xm5-harman",
+        )
+        assertEquals(bindingMap, HistoryCodec.decodeStringMap(HistoryCodec.encodeStringMap(bindingMap)))
+
+        val badInputs = listOf(null, "", "  ", "null", "{bad", "[1,2", """{"k":null}""")
+        badInputs.forEach { bad ->
+            assertEquals(emptyList<CustomHeadphoneProfile>(), HistoryCodec.decodeCustomHeadphoneProfiles(bad))
+            assertEquals(emptyMap<String, String>(), HistoryCodec.decodeStringMap(bad))
+        }
+
+        val corruptProfileJson = """
+            [
+              {"id": "", "name": "No ID", "gains31Db": [1, 2]},
+              {"id": "p-ok", "name": "Overflow HP", "gains31Db": [1e100, 30.0, -30.0, "bad", 2.25], "extraHeadroomDb": -2.0, "sourceLabel": ""},
+              123
+            ]
+        """.trimIndent()
+        val sanitizedProfiles = HistoryCodec.decodeCustomHeadphoneProfiles(corruptProfileJson)
+        assertEquals(1, sanitizedProfiles.size)
+        assertEquals("p-ok", sanitizedProfiles[0].id)
+        assertEquals(31, sanitizedProfiles[0].gains31Db.size)
+        assertEquals(0f, sanitizedProfiles[0].gains31Db[0], 0.0001f)
+        assertEquals(15f, sanitizedProfiles[0].gains31Db[1], 0.0001f)
+        assertEquals(-15f, sanitizedProfiles[0].gains31Db[2], 0.0001f)
+        assertEquals(0f, sanitizedProfiles[0].gains31Db[3], 0.0001f)
+        assertEquals(2.25f, sanitizedProfiles[0].gains31Db[4], 0.0001f)
+        assertEquals(0f, sanitizedProfiles[0].extraHeadroomDb, 0.0001f)
+        assertEquals("AutoEQ", sanitizedProfiles[0].sourceLabel)
+
+        val mixedMapJson = """{"valid":"id-1","": "empty-key","blank-val":"","num":123,"obj":{},"nil":null}"""
+        assertEquals(mapOf("valid" to "id-1"), HistoryCodec.decodeStringMap(mixedMapJson))
     }
 }
