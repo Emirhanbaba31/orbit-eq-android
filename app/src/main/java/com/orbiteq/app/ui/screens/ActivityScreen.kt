@@ -1,0 +1,1349 @@
+package com.orbiteq.app.ui.screens
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.orbiteq.app.R
+import com.orbiteq.app.dsp.AppRuleResolver
+import com.orbiteq.app.model.AppRule
+import com.orbiteq.app.model.AppRuleAction
+import com.orbiteq.app.model.DspBackend
+import com.orbiteq.app.model.EngineStatus
+import com.orbiteq.app.model.HeadphoneProfile
+import com.orbiteq.app.model.OrbitThemeMode
+import com.orbiteq.app.model.OrbitUiState
+import com.orbiteq.app.model.PleasureMode
+import com.orbiteq.app.model.SessionAttachmentMode
+import com.orbiteq.app.model.TrackActivityEntry
+import com.orbiteq.app.ui.OrbitGlassCard
+import com.orbiteq.app.ui.OrbitPermissionState
+import com.orbiteq.app.ui.OrbitStatusChip
+import com.orbiteq.app.ui.SectionLabelText
+import com.orbiteq.app.ui.icons.OrbitIcons
+import com.orbiteq.app.ui.localizedSpectralTag
+import com.orbiteq.app.ui.modeDisplayName
+import com.orbiteq.app.ui.outputDeviceIcon
+import com.orbiteq.app.ui.resolveOutputDeviceName
+import com.orbiteq.app.ui.theme.LocalOrbitColors
+import com.orbiteq.app.ui.theme.SpaceMonoTabularStyle
+import java.util.Locale
+
+@Composable
+fun ActivityScreen(
+    uiState: OrbitUiState,
+    permissionState: OrbitPermissionState,
+    contentPadding: PaddingValues,
+    onHeadphoneProfileChange: (HeadphoneProfile) -> Unit,
+    onDismissQ30Tip: () -> Unit,
+    onSessionModeChange: (SessionAttachmentMode) -> Unit,
+    onSetAppRule: (AppRule) -> Unit,
+    onRemoveAppRule: (String) -> Unit,
+    onTogglePinTrack: (String, String, PleasureMode) -> Unit,
+    onThemeModeChange: (OrbitThemeMode) -> Unit,
+    onRequestRecordAudio: () -> Unit,
+    onOpenNotificationListenerSettings: () -> Unit,
+    onRequestPostNotifications: () -> Unit,
+    onRequestBatteryOptimizationExemption: () -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    var editingRule by remember { mutableStateOf<AppRule?>(null) }
+
+    val sortedRules = remember(uiState.settings.appRules, uiState.nowPlaying.packageName) {
+        val activePkg = uiState.nowPlaying.packageName?.trim()?.lowercase(Locale.ROOT)
+        uiState.settings.appRules.values.sortedWith(
+            compareByDescending<AppRule> { it.packageName.lowercase(Locale.ROOT) == activePkg }
+                .thenBy { it.displayName.lowercase(Locale.ROOT) },
+        )
+    }
+
+    val currentNowPlayingKey = remember(uiState.nowPlaying.packageName, uiState.nowPlaying.trackTitle) {
+        val pkg = uiState.nowPlaying.packageName?.trim().orEmpty()
+        val title = uiState.nowPlaying.trackTitle.trim()
+        if (pkg.isNotEmpty() && title.isNotEmpty()) AppRuleResolver.trackKey(pkg, title) else null
+    }
+
+    val historyByTrackKey = remember(uiState.recentActivity) {
+        uiState.recentActivity.associateBy { AppRuleResolver.trackKey(it.packageName, it.trackTitle) }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .widthIn(max = 720.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = contentPadding.calculateTopPadding(),
+            bottom = contentPadding.calculateBottomPadding(),
+        ),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item(key = "live_engine_telemetry") {
+            LiveEngineTelemetryCard(
+                uiState = uiState,
+                onSessionModeChange = { mode ->
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onSessionModeChange(mode)
+                },
+            )
+        }
+
+        item(key = "q30_headphone_compensation") {
+            HeadphoneCompensationCard(
+                uiState = uiState,
+                onSelectProfile = { profile ->
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onHeadphoneProfileChange(profile)
+                },
+                onDismissQ30Tip = onDismissQ30Tip,
+            )
+        }
+
+        item(key = "guided_permissions") {
+            GuidedSetupCard(
+                permissionState = permissionState,
+                onRequestRecordAudio = onRequestRecordAudio,
+                onOpenNotificationListenerSettings = onOpenNotificationListenerSettings,
+                onRequestPostNotifications = onRequestPostNotifications,
+                onRequestBatteryOptimizationExemption = onRequestBatteryOptimizationExemption,
+            )
+        }
+
+        item(key = "app_rules") {
+            AppSmartRulesCard(
+                uiState = uiState,
+                rules = sortedRules,
+                onAddActiveAppRule = { pkg, appName ->
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onSetAppRule(
+                        AppRule(
+                            packageName = pkg,
+                            displayName = appName,
+                            action = AppRuleAction.USE_MODE,
+                            mode = uiState.activeMode,
+                        ),
+                    )
+                },
+                onEditRule = { rule -> editingRule = rule },
+            )
+        }
+
+        if (uiState.settings.pinnedTracks.isNotEmpty()) {
+            item(key = "pinned_tracks") {
+                PinnedTracksCard(
+                    pinnedTracks = uiState.settings.pinnedTracks,
+                    historyByTrackKey = historyByTrackKey,
+                    onUnpin = { pkg, title, mode ->
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onTogglePinTrack(pkg, title, mode)
+                    },
+                )
+            }
+        }
+
+        item(key = "recent_activity_header") {
+            SectionLabelText(
+                text = stringResource(R.string.activity_recent_title),
+                modifier = Modifier.padding(top = 4.dp, start = 2.dp),
+            )
+        }
+
+        if (uiState.recentActivity.isEmpty()) {
+            item(key = "recent_activity_empty") {
+                OrbitGlassCard {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            imageVector = OrbitIcons.MusicNote,
+                            contentDescription = null,
+                            tint = LocalOrbitColors.current.textMuted,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.activity_empty),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = LocalOrbitColors.current.textSecondary,
+                            ),
+                        )
+                    }
+                }
+            }
+        } else {
+            items(
+                items = uiState.recentActivity,
+                key = { it.id },
+            ) { entry ->
+                val trackKey = AppRuleResolver.trackKey(entry.packageName, entry.trackTitle)
+                val pinnedMode = uiState.settings.pinnedTracks[trackKey]
+                val isPinned = pinnedMode != null
+                val pinTargetMode = if (trackKey == currentNowPlayingKey) {
+                    uiState.activeMode
+                } else {
+                    entry.modeUsed
+                }
+                RecentActivityRowCard(
+                    entry = entry,
+                    pinnedMode = pinnedMode,
+                    isPinned = isPinned,
+                    onTogglePin = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onTogglePinTrack(
+                            entry.packageName,
+                            entry.trackTitle,
+                            pinnedMode ?: pinTargetMode,
+                        )
+                    },
+                )
+            }
+        }
+
+        item(key = "appearance_theme_card") {
+            AppearanceThemeCard(
+                selectedTheme = uiState.settings.themeMode,
+                onThemeModeChange = { theme ->
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onThemeModeChange(theme)
+                },
+            )
+        }
+    }
+
+    editingRule?.let { rule ->
+        AppRuleEditorDialog(
+            rule = rule,
+            onDismiss = { editingRule = null },
+            onSelectMode = { mode ->
+                onSetAppRule(rule.copy(action = AppRuleAction.USE_MODE, mode = mode))
+                editingRule = null
+            },
+            onSelectBypass = {
+                onSetAppRule(rule.copy(action = AppRuleAction.BYPASS))
+                editingRule = null
+            },
+            onRemoveRule = {
+                onRemoveAppRule(rule.packageName)
+                editingRule = null
+            },
+        )
+    }
+}
+
+@Composable
+private fun LiveEngineTelemetryCard(
+    uiState: OrbitUiState,
+    onSessionModeChange: (SessionAttachmentMode) -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    val telemetry = uiState.telemetry
+    val effectiveStatus = if (!uiState.settings.powerEnabled) EngineStatus.IDLE else telemetry.engineStatus
+
+    val statusText = when (effectiveStatus) {
+        EngineStatus.AUTO_FFT_LOCKED -> stringResource(R.string.hud_status_fft_locked)
+        EngineStatus.PROFILE_FALLBACK -> stringResource(R.string.hud_status_profile_fallback)
+        EngineStatus.BYPASSED -> stringResource(R.string.hud_status_bypassed)
+        EngineStatus.IDLE -> stringResource(R.string.hud_status_idle)
+    }
+    val statusAccent = when (effectiveStatus) {
+        EngineStatus.AUTO_FFT_LOCKED -> colors.liveAudioPrimary
+        EngineStatus.PROFILE_FALLBACK -> colors.textSecondary
+        EngineStatus.BYPASSED -> colors.danger
+        EngineStatus.IDLE -> colors.textMuted
+    }
+
+    val sessionLabel = if (telemetry.activeSessionId == 0) {
+        stringResource(R.string.telemetry_session_global)
+    } else {
+        stringResource(R.string.telemetry_session_fmt, telemetry.activeSessionId)
+    }
+
+    val sampleRateLabel = remember(telemetry.sampleRateHz) {
+        val khz = telemetry.sampleRateHz.coerceAtLeast(8000) / 1000f
+        if (khz % 1f == 0f) {
+            String.format(Locale.US, "%d kHz", khz.toInt())
+        } else {
+            String.format(Locale.US, "%.1f kHz", khz)
+        }
+    }
+
+    val (backendTitle, backendSub) = when (telemetry.dspBackend) {
+        DspBackend.DYNAMICS_PROCESSING -> stringResource(R.string.telemetry_backend_dp) to
+            stringResource(R.string.telemetry_backend_dp_sub)
+        DspBackend.LEGACY_EQ -> stringResource(R.string.telemetry_backend_legacy) to
+            stringResource(R.string.telemetry_backend_legacy_sub)
+        DspBackend.NONE -> stringResource(R.string.telemetry_backend_none) to
+            stringResource(R.string.telemetry_backend_none_sub)
+    }
+
+    val fftSub = if (effectiveStatus == EngineStatus.AUTO_FFT_LOCKED) {
+        stringResource(R.string.telemetry_fft_sub_live)
+    } else {
+        stringResource(R.string.telemetry_fft_sub_fallback)
+    }
+
+    OrbitGlassCard(highlighted = effectiveStatus == EngineStatus.AUTO_FFT_LOCKED) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SectionLabelText(text = stringResource(R.string.activity_telemetry_title))
+            OrbitStatusChip(text = statusText, accentColor = statusAccent)
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TelemetryStatTile(
+                modifier = Modifier.weight(1f),
+                label = stringResource(R.string.telemetry_output_label),
+                value = resolveOutputDeviceName(uiState.connectedDevice),
+                icon = outputDeviceIcon(uiState.connectedDevice),
+                accent = if (uiState.connectedDevice.isSoundcoreQ30) colors.ionAccent else colors.textSecondary,
+            )
+            TelemetryStatTile(
+                modifier = Modifier.weight(1f),
+                label = stringResource(R.string.telemetry_sample_rate_label),
+                value = "$sessionLabel · $sampleRateLabel",
+                icon = OrbitIcons.ActivityOrbit,
+                accent = colors.textSecondary,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = colors.surface,
+            border = BorderStroke(1.dp, colors.borderHairline),
+        ) {
+            Column(
+                modifier = Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = backendTitle,
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.textPrimary,
+                        ),
+                    )
+                    Text(
+                        text = backendSub,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = colors.textSecondary,
+                        ),
+                    )
+                }
+                HorizontalDivider(thickness = 1.dp, color = colors.borderHairline)
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = stringResource(R.string.telemetry_fft_title),
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.textPrimary,
+                        ),
+                    )
+                    Text(
+                        text = fftSub,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = colors.textSecondary,
+                        ),
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Text(
+            text = stringResource(R.string.telemetry_session_mode_label),
+            style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = 12.sp,
+                color = colors.textSecondary,
+            ),
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf(
+                SessionAttachmentMode.AUTO to stringResource(R.string.session_mode_auto),
+                SessionAttachmentMode.GLOBAL_ONLY to stringResource(R.string.session_mode_global),
+            ).forEach { (mode, label) ->
+                val selected = uiState.settings.sessionMode == mode
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) colors.primaryAccent else colors.surface)
+                        .border(
+                            width = 1.dp,
+                            color = if (selected) colors.borderActive else colors.borderHairline,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        .selectable(
+                            selected = selected,
+                            role = Role.RadioButton,
+                            onClick = { onSessionModeChange(mode) },
+                        )
+                        .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontSize = 12.sp,
+                            color = if (selected) colors.onPrimaryAccent else colors.textSecondary,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TelemetryStatTile(
+    label: String,
+    value: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    accent: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalOrbitColors.current
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = colors.surface,
+        border = BorderStroke(1.dp, colors.borderHairline),
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 11.sp,
+                        color = colors.textMuted,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                text = value,
+                style = SpaceMonoTabularStyle.copy(
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.textPrimary,
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HeadphoneCompensationCard(
+    uiState: OrbitUiState,
+    onSelectProfile: (HeadphoneProfile) -> Unit,
+    onDismissQ30Tip: () -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    val showQ30Banner = (
+        uiState.connectedDevice.isSoundcoreQ30 ||
+            uiState.activeHeadphoneProfile == HeadphoneProfile.Q30_CLEAN_BASE ||
+            uiState.activeHeadphoneProfile == HeadphoneProfile.Q30_SAFE_STACK
+        ) && !uiState.settings.q30TipDismissed
+
+    val profiles = listOf(
+        Triple(
+            HeadphoneProfile.Q30_CLEAN_BASE,
+            stringResource(R.string.profile_q30_clean_base),
+            stringResource(R.string.profile_q30_clean_base_desc),
+        ),
+        Triple(
+            HeadphoneProfile.Q30_SAFE_STACK,
+            stringResource(R.string.profile_q30_safe_stack),
+            stringResource(R.string.profile_q30_safe_stack_desc),
+        ),
+        Triple(
+            HeadphoneProfile.FLAT_GENERIC,
+            stringResource(R.string.profile_flat_generic),
+            stringResource(R.string.profile_flat_generic_desc),
+        ),
+        Triple(
+            HeadphoneProfile.PHONE_SPEAKER_SAFE,
+            stringResource(R.string.profile_phone_speaker),
+            stringResource(R.string.profile_phone_speaker_desc),
+        ),
+    )
+
+    OrbitGlassCard(highlighted = uiState.connectedDevice.isSoundcoreQ30) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SectionLabelText(text = stringResource(R.string.headphone_profile_title))
+            if (uiState.connectedDevice.isSoundcoreQ30) {
+                OrbitStatusChip(
+                    text = stringResource(R.string.q30_detected_badge),
+                    accentColor = colors.ionAccent,
+                )
+            }
+        }
+
+        AnimatedVisibility(visible = showQ30Banner) {
+            Column {
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    color = colors.primaryAccent.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, colors.borderActive),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = OrbitIcons.Headphones,
+                                contentDescription = null,
+                                tint = colors.ionAccent,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = stringResource(R.string.q30_tip_title),
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = colors.textPrimary,
+                                ),
+                            )
+                        }
+                        Text(
+                            text = stringResource(R.string.q30_tip_body),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = colors.textSecondary,
+                            ),
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            OutlinedButton(
+                                onClick = onDismissQ30Tip,
+                                modifier = Modifier.heightIn(min = 48.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, colors.borderActive),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.q30_tip_dismiss),
+                                    style = MaterialTheme.typography.labelLarge.copy(
+                                        fontSize = 12.sp,
+                                        color = colors.textPrimary,
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectableGroup(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            profiles.forEach { (profile, title, desc) ->
+                val selected = uiState.activeHeadphoneProfile == profile
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 56.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) colors.surfaceElevated else colors.surface)
+                        .border(
+                            width = 1.dp,
+                            color = if (selected) colors.borderActive else colors.borderHairline,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        .selectable(
+                            selected = selected,
+                            role = Role.RadioButton,
+                            onClick = { onSelectProfile(profile) },
+                        )
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.textPrimary,
+                            ),
+                        )
+                        Text(
+                            text = desc,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = colors.textSecondary,
+                            ),
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Icon(
+                        imageVector = if (selected) OrbitIcons.CheckCircle else OrbitIcons.ChevronRight,
+                        contentDescription = null,
+                        tint = if (selected) colors.ionAccent else colors.textMuted,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GuidedSetupCard(
+    permissionState: OrbitPermissionState,
+    onRequestRecordAudio: () -> Unit,
+    onOpenNotificationListenerSettings: () -> Unit,
+    onRequestPostNotifications: () -> Unit,
+    onRequestBatteryOptimizationExemption: () -> Unit,
+) {
+    OrbitGlassCard {
+        SectionLabelText(text = stringResource(R.string.setup_section_title))
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            PermissionSetupRow(
+                title = stringResource(R.string.setup_fft_title),
+                description = stringResource(R.string.setup_fft_desc),
+                isGranted = permissionState.hasRecordAudio,
+                grantedLabel = stringResource(R.string.status_granted),
+                actionLabel = stringResource(R.string.action_grant),
+                onAction = onRequestRecordAudio,
+            )
+            PermissionSetupRow(
+                title = stringResource(R.string.setup_notif_listener_title),
+                description = stringResource(R.string.setup_notif_listener_desc),
+                isGranted = permissionState.hasNotificationAccess,
+                grantedLabel = stringResource(R.string.status_granted),
+                actionLabel = stringResource(R.string.action_open_settings),
+                onAction = onOpenNotificationListenerSettings,
+            )
+            PermissionSetupRow(
+                title = stringResource(R.string.setup_notifications_title),
+                description = stringResource(R.string.setup_notifications_desc),
+                isGranted = permissionState.hasPostNotifications,
+                grantedLabel = stringResource(R.string.status_granted),
+                actionLabel = stringResource(R.string.action_grant),
+                onAction = onRequestPostNotifications,
+            )
+            PermissionSetupRow(
+                title = stringResource(R.string.setup_battery_title),
+                description = stringResource(R.string.setup_battery_desc),
+                isGranted = permissionState.isBatteryOptimizationIgnored,
+                grantedLabel = stringResource(R.string.status_exempt),
+                actionLabel = stringResource(R.string.action_open_settings),
+                onAction = onRequestBatteryOptimizationExemption,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PermissionSetupRow(
+    title: String,
+    description: String,
+    isGranted: Boolean,
+    grantedLabel: String,
+    actionLabel: String,
+    onAction: () -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = colors.surface,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (isGranted) colors.borderHairline else colors.borderActive,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = if (isGranted) OrbitIcons.CheckCircle else OrbitIcons.WarningInfo,
+                        contentDescription = null,
+                        tint = if (isGranted) colors.ionAccent else colors.primaryAccent,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.textPrimary,
+                        ),
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                OrbitStatusChip(
+                    text = if (isGranted) grantedLabel else stringResource(R.string.status_required),
+                    accentColor = if (isGranted) colors.ionAccent else colors.danger,
+                )
+            }
+
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = colors.textSecondary,
+                ),
+            )
+
+            if (!isGranted) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    Button(
+                        onClick = onAction,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = colors.primaryAccent,
+                            contentColor = colors.onPrimaryAccent,
+                        ),
+                    ) {
+                        Text(
+                            text = actionLabel,
+                            style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppSmartRulesCard(
+    uiState: OrbitUiState,
+    rules: List<AppRule>,
+    onAddActiveAppRule: (String, String) -> Unit,
+    onEditRule: (AppRule) -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    val activePkg = uiState.nowPlaying.packageName
+        ?.trim()
+        ?.lowercase(Locale.ROOT)
+        ?.takeIf { it.isNotEmpty() }
+    val activePkgToAdd = activePkg?.takeIf { pkg ->
+        uiState.settings.appRules.keys.none { it.trim().lowercase(Locale.ROOT) == pkg }
+    }
+    val activeDisplayName = uiState.nowPlaying.appName.trim().ifEmpty { activePkg.orEmpty() }
+
+    OrbitGlassCard {
+        SectionLabelText(text = stringResource(R.string.rules_section_title))
+        Spacer(modifier = Modifier.height(10.dp))
+
+        if (activePkgToAdd != null) {
+            Button(
+                onClick = { onAddActiveAppRule(activePkgToAdd, activeDisplayName) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.primaryAccent,
+                    contentColor = colors.onPrimaryAccent,
+                ),
+            ) {
+                Icon(
+                    imageVector = OrbitIcons.Save,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = stringResource(R.string.rules_add_active_app_fmt, activeDisplayName),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            rules.forEach { rule ->
+                val isBypass = rule.action == AppRuleAction.BYPASS
+                val badgeText = if (isBypass) {
+                    stringResource(R.string.rule_action_bypass)
+                } else {
+                    modeDisplayName(rule.mode)
+                }
+                val ruleCd = stringResource(R.string.rules_mode_cd_fmt, rule.displayName)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 52.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.borderHairline, RoundedCornerShape(12.dp))
+                        .clickable(
+                            role = Role.Button,
+                            onClick = { onEditRule(rule) },
+                        )
+                        .semantics {
+                            contentDescription = "$ruleCd: $badgeText"
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = rule.displayName,
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.textPrimary,
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = rule.packageName,
+                            style = SpaceMonoTabularStyle.copy(
+                                fontSize = 10.sp,
+                                color = colors.textMuted,
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    OrbitStatusChip(
+                        text = badgeText,
+                        accentColor = if (isBypass) colors.danger else colors.ionAccent,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PinnedTracksCard(
+    pinnedTracks: Map<String, PleasureMode>,
+    historyByTrackKey: Map<String, TrackActivityEntry>,
+    onUnpin: (String, String, PleasureMode) -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    val unpinCd = stringResource(R.string.pinned_unpin_cd)
+
+    OrbitGlassCard {
+        SectionLabelText(text = stringResource(R.string.pinned_tracks_title))
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            pinnedTracks.entries.forEach { (key, mode) ->
+                val parts = key.split('|', limit = 2)
+                val pkg = parts.getOrElse(0) { "" }
+                val rawTitle = parts.getOrElse(1) { key }
+                val matchedEntry = historyByTrackKey[key]
+                val displayTitle = matchedEntry?.trackTitle ?: rawTitle
+                val displaySub = matchedEntry?.appName?.ifBlank { pkg } ?: pkg
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 52.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.borderActive, RoundedCornerShape(12.dp))
+                        .padding(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = displayTitle,
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.textPrimary,
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = displaySub,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = colors.textSecondary,
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                    OrbitStatusChip(
+                        text = modeDisplayName(mode),
+                        accentColor = colors.ionAccent,
+                    )
+                    Box(
+                        modifier = Modifier
+                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(
+                                role = Role.Button,
+                                onClick = { onUnpin(pkg, rawTitle, mode) },
+                            )
+                            .semantics {
+                                contentDescription = "$unpinCd: $displayTitle"
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = OrbitIcons.PinFilled,
+                            contentDescription = null,
+                            tint = colors.ionAccent,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentActivityRowCard(
+    entry: TrackActivityEntry,
+    pinnedMode: PleasureMode?,
+    isPinned: Boolean,
+    onTogglePin: () -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    val pinCd = if (isPinned) {
+        stringResource(R.string.pinned_unpin_cd)
+    } else {
+        stringResource(R.string.pin_track_cd)
+    }
+    val subtitle = listOf(entry.artist, entry.appName)
+        .filter { it.isNotBlank() }
+        .joinToString(" · ")
+        .ifBlank { entry.packageName }
+
+    OrbitGlassCard(
+        highlighted = isPinned,
+        cornerRadius = 14.dp,
+        contentPadding = PaddingValues(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 6.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = entry.trackTitle,
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.textPrimary,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = colors.textSecondary,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OrbitStatusChip(
+                        text = modeDisplayName(pinnedMode ?: entry.modeUsed),
+                        accentColor = colors.ionAccent,
+                    )
+                    OrbitStatusChip(
+                        text = localizedSpectralTag(entry.spectralTag),
+                        accentColor = colors.textSecondary,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            Box(
+                modifier = Modifier
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        if (isPinned) colors.primaryAccent.copy(alpha = 0.16f) else colors.surface,
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = if (isPinned) colors.borderActive else colors.borderHairline,
+                        shape = RoundedCornerShape(12.dp),
+                    )
+                    .clickable(
+                        role = Role.Button,
+                        onClick = onTogglePin,
+                    )
+                    .semantics {
+                        contentDescription = "$pinCd: ${entry.trackTitle}"
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = if (isPinned) OrbitIcons.PinFilled else OrbitIcons.PinOutline,
+                    contentDescription = null,
+                    tint = if (isPinned) colors.ionAccent else colors.textSecondary,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppearanceThemeCard(
+    selectedTheme: OrbitThemeMode,
+    onThemeModeChange: (OrbitThemeMode) -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    val options = listOf(
+        Triple(
+            OrbitThemeMode.DEEP_SPACE_HUD,
+            stringResource(R.string.theme_deep_space),
+            stringResource(R.string.theme_deep_space_desc),
+        ),
+        Triple(
+            OrbitThemeMode.LUNAR_MONOCHROME,
+            stringResource(R.string.theme_lunar_mono),
+            stringResource(R.string.theme_lunar_mono_desc),
+        ),
+    )
+
+    OrbitGlassCard {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = OrbitIcons.Palette,
+                contentDescription = null,
+                tint = colors.ionAccent,
+                modifier = Modifier.size(16.dp),
+            )
+            SectionLabelText(text = stringResource(R.string.appearance_section_title))
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectableGroup(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            options.forEach { (mode, title, desc) ->
+                val selected = mode == selectedTheme
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 56.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) colors.surfaceElevated else colors.surface)
+                        .border(
+                            width = 1.dp,
+                            color = if (selected) colors.borderActive else colors.borderHairline,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        .selectable(
+                            selected = selected,
+                            role = Role.RadioButton,
+                            onClick = { onThemeModeChange(mode) },
+                        )
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.textPrimary,
+                            ),
+                        )
+                        Text(
+                            text = desc,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = colors.textSecondary,
+                            ),
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Icon(
+                        imageVector = if (selected) OrbitIcons.CheckCircle else OrbitIcons.ChevronRight,
+                        contentDescription = null,
+                        tint = if (selected) colors.ionAccent else colors.textMuted,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppRuleEditorDialog(
+    rule: AppRule,
+    onDismiss: () -> Unit,
+    onSelectMode: (PleasureMode) -> Unit,
+    onSelectBypass: () -> Unit,
+    onRemoveRule: () -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    val isBypassSelected = rule.action == AppRuleAction.BYPASS
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surfaceElevated,
+        titleContentColor = colors.textPrimary,
+        textContentColor = colors.textSecondary,
+        shape = RoundedCornerShape(20.dp),
+        title = {
+            Text(
+                text = stringResource(R.string.rules_edit_title_fmt, rule.displayName),
+                style = MaterialTheme.typography.titleLarge.copy(
+                    color = colors.textPrimary,
+                ),
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.selectableGroup(),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                PleasureMode.entries.forEach { mode ->
+                    val selected = !isBypassSelected && rule.mode == mode
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (selected) colors.primaryAccent else colors.surface)
+                            .border(
+                                width = 1.dp,
+                                color = if (selected) colors.borderActive else colors.borderHairline,
+                                shape = RoundedCornerShape(12.dp),
+                            )
+                            .selectable(
+                                selected = selected,
+                                role = Role.RadioButton,
+                                onClick = { onSelectMode(mode) },
+                            )
+                            .padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = modeDisplayName(mode),
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = if (selected) colors.onPrimaryAccent else colors.textPrimary,
+                            ),
+                        )
+                        if (selected) {
+                            Icon(
+                                imageVector = OrbitIcons.CheckCircle,
+                                contentDescription = null,
+                                tint = colors.onPrimaryAccent,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (isBypassSelected) colors.danger.copy(alpha = 0.22f) else colors.surface,
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (isBypassSelected) colors.danger else colors.borderHairline,
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        .selectable(
+                            selected = isBypassSelected,
+                            role = Role.RadioButton,
+                            onClick = onSelectBypass,
+                        )
+                        .padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = stringResource(R.string.rule_action_bypass),
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = if (isBypassSelected) colors.danger else colors.textPrimary,
+                        ),
+                    )
+                    if (isBypassSelected) {
+                        Icon(
+                            imageVector = OrbitIcons.CheckCircle,
+                            contentDescription = null,
+                            tint = colors.danger,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onRemoveRule,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.rules_remove_action),
+                    color = colors.danger,
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.preset_dialog_cancel),
+                    color = colors.textSecondary,
+                )
+            }
+        },
+    )
+}

@@ -154,4 +154,18 @@
     <string name="spectral_wide_stage">Wide Stage</string>
     <string name="spectral_vocal">Vocal</string>
     <string name="spectral_warm">Warm</string>
+
+    <!-- Extended UI Labels -->
+    <string name="studio_auto_bypass_notice">Auto-bypassed by app rule. Tap a mode to override.</string>
+    <string name="mixer_fader_hint">Drag to trim · Double-tap resets to 0.0 dB</string>
+    <string name="dsp_limiter_active">LIM · ACTIVE</string>
+    <string name="dsp_limiter_standby">LIM · STANDBY</string>
+    <string name="preset_delete_cd">Delete preset</string>
+    <string name="telemetry_sample_rate_label">Sample Rate</string>
+    <string name="telemetry_output_label">Output Route</string>
+    <string name="q30_detected_badge">Q30 DETECTED</string>
+    <string name="rules_add_active_app_fmt">Add rule for %1$s</string>
+    <string name="rules_edit_title_fmt">Rule · %1$s</string>
+    <string name="rules_remove_action">Remove rule</string>
+    <string name="rules_mode_cd_fmt">Edit rule for %1$s</string>
 </resources>
