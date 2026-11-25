@@ -62,17 +62,8 @@ class AudioSessionReceiver : BroadcastReceiver() {
                 if (pkg == appContext.packageName || sessionId <= 0) return
 
                 AudioSessionRegistry.onSessionOpened(sessionId, pkg)
-                if (OrbitAudioService.isRunning) {
-                    sendServiceCommand(
-                        appContext,
-                        Intent(appContext, OrbitAudioService::class.java).apply {
-                            this.action = OrbitAudioService.ACTION_UPDATE_SESSION
-                            putExtra(OrbitAudioService.EXTRA_SESSION_ID, sessionId)
-                            putExtra(OrbitAudioService.EXTRA_SESSION_OPEN, true)
-                            putExtra(OrbitAudioService.EXTRA_SESSION_PACKAGE, pkg)
-                        },
-                    )
-                } else {
+                // When OrbitAudioService is already running, its in-process dynamicReceiver handles session updates directly.
+                if (!OrbitAudioService.isRunning) {
                     maybeStartBackgroundService(appContext, sessionId, pkg)
                 }
             }
@@ -81,28 +72,10 @@ class AudioSessionReceiver : BroadcastReceiver() {
                 val sessionId = intent.getIntExtra(AudioEffect.EXTRA_AUDIO_SESSION, -1)
                 if (sessionId <= 0) return
                 AudioSessionRegistry.onSessionClosed(sessionId)
-                if (OrbitAudioService.isRunning) {
-                    sendServiceCommand(
-                        appContext,
-                        Intent(appContext, OrbitAudioService::class.java).apply {
-                            this.action = OrbitAudioService.ACTION_UPDATE_SESSION
-                            putExtra(OrbitAudioService.EXTRA_SESSION_ID, sessionId)
-                            putExtra(OrbitAudioService.EXTRA_SESSION_OPEN, false)
-                        },
-                    )
-                }
             }
 
             AudioManager.ACTION_AUDIO_BECOMING_NOISY -> {
-                if (OrbitAudioService.isRunning) {
-                    sendServiceCommand(
-                        appContext,
-                        Intent(appContext, OrbitAudioService::class.java).apply {
-                            this.action = OrbitAudioService.ACTION_UPDATE_SESSION
-                            putExtra(OrbitAudioService.EXTRA_ROUTE_REFRESH, true)
-                        },
-                    )
-                }
+                // Handled directly by OrbitAudioService.dynamicReceiver when running.
             }
         }
     }
@@ -127,13 +100,6 @@ class AudioSessionReceiver : BroadcastReceiver() {
             } finally {
                 pendingResult.finish()
             }
-        }
-    }
-
-    private fun sendServiceCommand(appContext: Context, intent: Intent) {
-        try {
-            appContext.startService(intent)
-        } catch (_: RuntimeException) {
         }
     }
 

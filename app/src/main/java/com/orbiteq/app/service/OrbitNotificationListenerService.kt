@@ -242,13 +242,15 @@ class OrbitNotificationListenerService : NotificationListenerService() {
                 @Suppress("DEPRECATION")
                 packageManager.getApplicationInfo(packageName, 0)
             }
-            packageManager.getApplicationLabel(appInfo).toString().trim().ifEmpty { packageName }
+            packageManager.getApplicationLabel(appInfo).toString().trim()
         } catch (_: PackageManager.NameNotFoundException) {
-            packageName
+            ""
         } catch (_: RuntimeException) {
-            packageName
+            ""
         }
-        appLabelCache[packageName] = resolved
+        if (resolved.isNotEmpty()) {
+            appLabelCache[packageName] = resolved
+        }
         return resolved
     }
 

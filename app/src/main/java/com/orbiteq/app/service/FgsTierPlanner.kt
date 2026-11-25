@@ -9,6 +9,13 @@ enum class FgsTier {
 
 object FgsTierPlanner {
 
+    internal const val ACTION_START_FOREGROUND_FULL = "com.orbiteq.app.action.START_FOREGROUND_FULL"
+    internal const val ACTION_START_BACKGROUND_SAFE = "com.orbiteq.app.action.START_BACKGROUND_SAFE"
+    internal const val ACTION_PROMOTE_TO_FULL = "com.orbiteq.app.action.PROMOTE_TO_FULL"
+    internal const val ACTION_TOGGLE_BYPASS = "com.orbiteq.app.action.TOGGLE_BYPASS"
+    internal const val ACTION_STOP_ENGINE = "com.orbiteq.app.action.STOP_ENGINE"
+    internal const val ACTION_UPDATE_SESSION = "com.orbiteq.app.action.UPDATE_SESSION"
+
     fun planTier(
         startedFromForeground: Boolean,
         hasRecordAudioPermission: Boolean,
@@ -18,6 +25,19 @@ object FgsTierPlanner {
         } else {
             FgsTier.TIER2_PROFILE_ONLY
         }
+    }
+
+    fun isForegroundEligibleAction(action: String?): Boolean =
+        action == ACTION_START_FOREGROUND_FULL || action == ACTION_PROMOTE_TO_FULL
+
+    fun shouldPromoteForeground(
+        isForegroundPromoted: Boolean,
+        action: String?,
+    ): Boolean {
+        if (!isForegroundPromoted) return true
+        return action == ACTION_START_FOREGROUND_FULL ||
+            action == ACTION_START_BACKGROUND_SAFE ||
+            action == ACTION_PROMOTE_TO_FULL
     }
 
     fun resolveSessionId(

@@ -69,7 +69,7 @@ class OrbitAudioService : Service() {
     private var currentVolumeRatio: Float = 1.0f
 
     @Volatile
-    private var startedFromForegroundContext: Boolean = false
+    private var isForegroundPromoted: Boolean = false
 
     @Volatile
     private var lastNotificationSignature: String? = null
@@ -91,19 +91,16 @@ class OrbitAudioService : Service() {
         val action = intent?.action
 
         if (action == ACTION_STOP_ENGINE) {
-            // Satisfy startForegroundService timing contract before tearing down.
-            promoteForegroundSafe(FgsTier.TIER2_PROFILE_ONLY)
+            // Satisfy startForegroundService timing contract if not already foregrounded.
+            if (!isForegroundPromoted) {
+                promoteForegroundSafe(FgsTier.TIER2_PROFILE_ONLY)
+            }
             shutdownEngineAndStop()
             return START_NOT_STICKY
         }
 
-        if (action == ACTION_START_FOREGROUND_FULL) {
-            startedFromForegroundContext = true
-            if (!OrbitEngineRepository.uiState.value.settings.powerEnabled) {
-                OrbitEngineRepository.setPowerEnabled(true)
-            }
-        } else if (action == ACTION_PROMOTE_TO_FULL) {
-            startedFromForegroundContext = true
+        if (action == ACTION_START_FOREGROUND_FULL && !OrbitEngineRepository.uiState.value.settings.powerEnabled) {
+            OrbitEngineRepository.setPowerEnabled(true)
         }
 
         when (action) {
@@ -132,15 +129,18 @@ class OrbitAudioService : Service() {
             }
         }
 
-        val hasRecordAudio = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.RECORD_AUDIO,
-        ) == PackageManager.PERMISSION_GRANTED
-        val plannedTier = FgsTierPlanner.planTier(
-            startedFromForeground = startedFromForegroundContext,
-            hasRecordAudioPermission = hasRecordAudio,
-        )
-        promoteForegroundSafe(plannedTier)
+        if (FgsTierPlanner.shouldPromoteForeground(isForegroundPromoted, action)) {
+            val hasRecordAudio = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED
+            val plannedTier = FgsTierPlanner.planTier(
+                startedFromForeground = FgsTierPlanner.isForegroundEligibleAction(action),
+                hasRecordAudioPermission = hasRecordAudio,
+            )
+            promoteForegroundSafe(plannedTier)
+        }
+
         ensureDspLoopRunning()
         wakeSignal.trySend(Unit)
         return START_STICKY
@@ -150,6 +150,7 @@ class OrbitAudioService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        isForegroundPromoted = false
         dspLoopJob?.cancel()
         dspLoopJob = null
 
@@ -182,6 +183,7 @@ class OrbitAudioService : Service() {
         )
         try {
             startForegroundWithTier(effectiveTier, initialNotification)
+            isForegroundPromoted = true
         } catch (_: SecurityException) {
             effectiveTier = FgsTier.TIER2_PROFILE_ONLY
             try {
@@ -191,6 +193,7 @@ class OrbitAudioService : Service() {
                     tier = effectiveTier,
                 )
                 startForegroundWithTier(effectiveTier, fallbackNotification)
+                isForegroundPromoted = true
             } catch (_: RuntimeException) {
             }
         } catch (_: RuntimeException) {
@@ -383,6 +386,7 @@ class OrbitAudioService : Service() {
             ),
         )
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        isForegroundPromoted = false
         stopSelf()
     }
 
@@ -509,7 +513,7 @@ class OrbitAudioService : Service() {
         }
         if (wiredOrUsb != null) {
             val rawName = wiredOrUsb.productName?.toString()?.trim().orEmpty()
-            val displayName = rawName.ifEmpty { getString(R.string.device_bluetooth_default) }
+            val displayName = rawName.ifEmpty { getString(R.string.device_wired_default) }
             return ConnectedOutputDevice(
                 name = displayName,
                 isBluetooth = false,
@@ -662,12 +666,12 @@ class OrbitAudioService : Service() {
     }
 
     companion object {
-        const val ACTION_START_FOREGROUND_FULL = "com.orbiteq.app.action.START_FOREGROUND_FULL"
-        const val ACTION_START_BACKGROUND_SAFE = "com.orbiteq.app.action.START_BACKGROUND_SAFE"
-        const val ACTION_PROMOTE_TO_FULL = "com.orbiteq.app.action.PROMOTE_TO_FULL"
-        const val ACTION_TOGGLE_BYPASS = "com.orbiteq.app.action.TOGGLE_BYPASS"
-        const val ACTION_STOP_ENGINE = "com.orbiteq.app.action.STOP_ENGINE"
-        const val ACTION_UPDATE_SESSION = "com.orbiteq.app.action.UPDATE_SESSION"
+        const val ACTION_START_FOREGROUND_FULL = FgsTierPlanner.ACTION_START_FOREGROUND_FULL
+        const val ACTION_START_BACKGROUND_SAFE = FgsTierPlanner.ACTION_START_BACKGROUND_SAFE
+        const val ACTION_PROMOTE_TO_FULL = FgsTierPlanner.ACTION_PROMOTE_TO_FULL
+        const val ACTION_TOGGLE_BYPASS = FgsTierPlanner.ACTION_TOGGLE_BYPASS
+        const val ACTION_STOP_ENGINE = FgsTierPlanner.ACTION_STOP_ENGINE
+        const val ACTION_UPDATE_SESSION = FgsTierPlanner.ACTION_UPDATE_SESSION
 
         const val EXTRA_SESSION_ID = "com.orbiteq.app.extra.SESSION_ID"
         const val EXTRA_SESSION_OPEN = "com.orbiteq.app.extra.SESSION_OPEN"
@@ -703,6 +707,7 @@ class OrbitAudioService : Service() {
             sessionId: Int? = null,
             sessionPackage: String? = null,
         ) {
+            if (isRunning) return
             val intent = Intent(context, OrbitAudioService::class.java).apply {
                 action = ACTION_START_BACKGROUND_SAFE
                 if (sessionId != null && sessionId > 0) {

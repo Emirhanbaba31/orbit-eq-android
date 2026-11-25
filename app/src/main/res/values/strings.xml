@@ -12,6 +12,7 @@
     <string name="now_playing_idle_sub">Play Spotify, YouTube Music or any app</string>
     <string name="device_speaker_default">Phone Speaker</string>
     <string name="device_bluetooth_default">Bluetooth Audio</string>
+    <string name="device_wired_default">Wired / USB Audio</string>
     <string name="ab_bypass_label">A/B</string>
     <string name="ab_bypass_cd">Toggle A/B bypass comparison</string>
     <string name="power_toggle_cd">Toggle ORBIT EQ engine power</string>
