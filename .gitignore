@@ -1,0 +1,26 @@
+# Android / Gradle
+.gradle/
+build/
+app/build/
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+.idea/
+*.iml
+captures/
+.cxx/
+.navigation/
+
+# Signing secrets (NEVER commit)
+*.jks
+*.keystore
+keystore.properties
+
+# Brainstorming / SDD scratch
+.superpowers/
+
+# OS
+.DS_Store
+Thumbs.db
