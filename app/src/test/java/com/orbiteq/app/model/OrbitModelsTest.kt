@@ -33,6 +33,10 @@ class OrbitModelsTest {
             MbcMode.entries.map { it.name },
         )
         assertEquals(
+            listOf("OFF", "GENTLE", "STRONG"),
+            DeEsserMode.entries.map { it.name },
+        )
+        assertEquals(
             listOf("DEEP_SPACE_HUD", "LUNAR_MONOCHROME"),
             OrbitThemeMode.entries.map { it.name },
         )
@@ -87,6 +91,9 @@ class OrbitModelsTest {
         assertTrue(settings.customPresets.isEmpty())
         assertTrue(settings.customHeadphoneProfiles.isEmpty())
         assertTrue(settings.deviceCustomProfileIds.isEmpty())
+        assertEquals(0f, settings.toneTiltDbPerOct, 0.0001f)
+        assertEquals(DeEsserMode.GENTLE, settings.deEsserMode)
+        assertTrue(settings.loudnessMatchedBypass)
     }
 
     @Test
@@ -100,13 +107,17 @@ class OrbitModelsTest {
         assertTrue(telemetry.spectrumBins36.all { it == 0f })
         assertEquals(10, telemetry.liveEqCurveDb.size)
         assertTrue(telemetry.liveEqCurveDb.all { it == 0f })
+        assertEquals(31, telemetry.liveEqCurve31Db.size)
+        assertTrue(telemetry.liveEqCurve31Db.all { it == 0f })
         assertEquals(10, telemetry.adaptiveDeltaDb.size)
         assertTrue(telemetry.adaptiveDeltaDb.all { it == 0f })
         assertEquals(0f, telemetry.preampAttenuationDb, 0.0001f)
         assertEquals(0f, telemetry.loudnessBoostDb, 0.0001f)
+        assertEquals(0f, telemetry.bypassMatchGainDb, 0.0001f)
         assertEquals(-0.5f, telemetry.limiterCeilingDb, 0.0001f)
         assertEquals("Balanced", telemetry.dominantSpectralTag)
         assertEquals(10, telemetry.preEqBandCount)
+        assertEquals(5, telemetry.mbcBandCount)
         assertEquals("", telemetry.activeCompensationName)
 
         val uiState = OrbitUiState()
@@ -284,5 +295,84 @@ class OrbitModelsTest {
             ),
             visited,
         )
+    }
+
+    @Test
+    fun pleasureProfilesV3VoicingTiltAndAdaptiveShiftsMatchSpecification() {
+        val expectedQ30_31 = floatArrayOf(
+            0.0f, -0.3f, -0.8f, -1.6f, -2.5f, -3.5f, -4.4f, -5.0f, -5.2f, -4.7f,
+            -3.9f, -3.0f, -1.8f, -0.9f, -0.3f, 0.1f, 0.4f, 0.6f, 0.9f, 1.5f,
+            2.4f, 3.2f, 3.5f, 2.6f, 0.6f, -2.2f, -2.8f, -0.8f, 0.8f, 1.0f, 0.4f,
+        )
+        assertArrayEquals(
+            expectedQ30_31,
+            PleasureProfiles.compensationCurve31For(HeadphoneProfile.Q30_CLEAN_BASE),
+            0.0001f,
+        )
+
+        val expectedNova = floatArrayOf(3.0f, 3.2f, 0.8f, -0.8f, -0.3f, 0.8f, 1.8f, 2.2f, 2.4f, 2.8f)
+        assertArrayEquals(expectedNova, PleasureProfiles.targetCurveFor(PleasureMode.NOVA), 0.0001f)
+
+        PleasureMode.entries.forEach { pleasureMode ->
+            val shift = PleasureProfiles.adaptiveReferenceShiftFor(pleasureMode)
+            assertEquals(10, shift.size)
+            assertTrue(shift.all { it.isFinite() })
+            val before = shift[0]
+            shift[0] = 99f
+            assertEquals(before, PleasureProfiles.adaptiveReferenceShiftFor(pleasureMode)[0], 0.0001f)
+        }
+        assertArrayEquals(
+            floatArrayOf(0.02f, 0.02f, -0.01f, -0.01f, 0f, 0f, 0.01f, 0f, -0.01f, 0.02f),
+            PleasureProfiles.adaptiveReferenceShiftFor(PleasureMode.NOVA),
+            0.0001f,
+        )
+        assertArrayEquals(
+            floatArrayOf(0.05f, 0.04f, 0.01f, -0.01f, 0f, 0f, 0f, 0f, 0f, 0f),
+            PleasureProfiles.adaptiveReferenceShiftFor(PleasureMode.GRAVITY),
+            0.0001f,
+        )
+        assertArrayEquals(
+            floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0.01f, 0.02f, 0.04f, 0.04f),
+            PleasureProfiles.adaptiveReferenceShiftFor(PleasureMode.HORIZON),
+            0.0001f,
+        )
+        assertArrayEquals(
+            floatArrayOf(0.02f, 0.02f, 0.01f, 0f, 0f, 0f, -0.02f, -0.03f, -0.02f, -0.02f),
+            PleasureProfiles.adaptiveReferenceShiftFor(PleasureMode.ECLIPSE),
+            0.0001f,
+        )
+        assertArrayEquals(
+            floatArrayOf(-0.03f, -0.02f, 0f, 0.02f, 0.03f, 0.04f, 0.02f, 0f, -0.02f, -0.02f),
+            PleasureProfiles.adaptiveReferenceShiftFor(PleasureMode.COMMS),
+            0.0001f,
+        )
+
+        val zeroTilt = PleasureProfiles.analogTiltCurve31(0f)
+        assertEquals(31, zeroTilt.size)
+        assertTrue(zeroTilt.all { it == 0f && it.toRawBits() == 0 })
+        assertArrayEquals(FloatArray(31), PleasureProfiles.analogTiltCurve31(Float.NaN), 0.0001f)
+        assertArrayEquals(FloatArray(31), PleasureProfiles.analogTiltCurve31(Float.POSITIVE_INFINITY), 0.0001f)
+
+        val brightTilt = PleasureProfiles.analogTiltCurve31(1.0f)
+        val warmTilt = PleasureProfiles.analogTiltCurve31(-1.0f)
+        assertEquals(0f, brightTilt[17], 0.0001f) // 1000 Hz
+        assertEquals(0f, warmTilt[17], 0.0001f)
+        assertEquals(0, warmTilt[17].toRawBits()) // normalized -0f -> +0f
+        assertEquals(-brightTilt[14], brightTilt[20], 0.0001f) // 500 Hz vs 2000 Hz
+        assertEquals(-brightTilt[11], brightTilt[23], 0.0001f) // 250 Hz vs 4000 Hz
+        assertEquals(-brightTilt[8], brightTilt[26], 0.0001f) // 125 Hz vs 8000 Hz
+        for (i in 0 until 31) {
+            assertEquals(-brightTilt[i], warmTilt[i], 0.0001f)
+        }
+        // Shelf clamp at +-4.0 octaves (<= 50 Hz and >= 16 kHz)
+        assertEquals(-4.0f, brightTilt[0], 0.0001f)
+        assertEquals(-4.0f, brightTilt[4], 0.0001f)
+        assertEquals(4.0f, brightTilt[29], 0.0001f)
+        assertEquals(4.0f, brightTilt[30], 0.0001f)
+
+        // Clamp tilt to [-1.5, +1.5] dB/oct
+        val overClamped = PleasureProfiles.analogTiltCurve31(4.0f)
+        assertEquals(-6.0f, overClamped[0], 0.0001f)
+        assertEquals(6.0f, overClamped[30], 0.0001f)
     }
 }

@@ -1,11 +1,13 @@
 package com.orbiteq.app.dsp
 
+import java.util.Locale
 import kotlin.math.abs
 
 sealed interface AutoEqParseResult {
     data class Success(
         val gains31Db: List<Float>,
         val pointCount: Int,
+        val sourceLabel: String = "AutoEQ",
     ) : AutoEqParseResult
 
     data class Error(
@@ -17,11 +19,16 @@ object AutoEqParser {
 
     private const val MIN_FREQ_HZ = 10f
     private const val MAX_FREQ_HZ = 24000f
+    private const val MIN_PARAMETRIC_Q = 0.05
+    private const val MAX_PARAMETRIC_Q = 30.0
     private const val MIN_GAIN_DB = -15f
     private const val MAX_GAIN_DB = 15f
     private const val MIN_POINTS = 3
     private const val DUPLICATE_FREQ_EPSILON_HZ = 1e-3f
     private val TOKEN_SPLIT_REGEX = Regex("[,\\s]+")
+    private val WHITESPACE_REGEX = Regex("\\s+")
+    private val FILTER_PREFIX_REGEX = Regex("^filter(?=\\s|\\d|:|$)", RegexOption.IGNORE_CASE)
+    private val PARAMETRIC_LINE_REGEX = Regex("^filter(?:\\s*\\d+)?\\s*:\\s*(.+)$", RegexOption.IGNORE_CASE)
 
     private data class EqPoint(
         val freqHz: Float,
@@ -34,16 +41,177 @@ object AutoEqParser {
             return AutoEqParseResult.Error("AutoEQ input is empty")
         }
 
-        val parsedPoints = ArrayList<EqPoint>()
-        for (rawLine in normalizedInput.lineSequence()) {
-            val withoutComment = rawLine.substringBefore('#').trim()
-            if (withoutComment.isEmpty()) continue
-            if (withoutComment.startsWith("preamp:", ignoreCase = true)) continue
+        val contentLines = normalizedInput.lineSequence()
+            .map { it.substringBefore('#').trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("preamp:", ignoreCase = true) }
+            .toList()
 
-            val payload = if (withoutComment.startsWith("graphiceq:", ignoreCase = true)) {
-                withoutComment.substringAfter(':').trim()
+        if (contentLines.isEmpty()) {
+            return AutoEqParseResult.Error("At least $MIN_POINTS EQ points are required (found 0)")
+        }
+
+        if (contentLines.any { FILTER_PREFIX_REGEX.containsMatchIn(it) }) {
+            return parseParametricEq(contentLines)
+        }
+        return parseGraphicEq(contentLines)
+    }
+
+    private fun parseParametricEq(contentLines: List<String>): AutoEqParseResult {
+        val filters = ArrayList<ParametricFilter>(contentLines.size)
+
+        for (line in contentLines) {
+            val match = PARAMETRIC_LINE_REGEX.matchEntire(line)
+                ?: return AutoEqParseResult.Error("Malformed parametric filter line: '$line'")
+            val tokens = match.groupValues[1].trim().split(WHITESPACE_REGEX)
+            if (tokens.isEmpty() || tokens[0].isEmpty()) {
+                return AutoEqParseResult.Error("Empty parametric filter definition in '$line'")
+            }
+
+            when (tokens[0].uppercase(Locale.ROOT)) {
+                "OFF" -> continue
+                "ON" -> Unit
+                else -> return AutoEqParseResult.Error(
+                    "Expected ON or OFF state in parametric filter line: '$line'",
+                )
+            }
+
+            if (tokens.size < 2) {
+                return AutoEqParseResult.Error("Missing parametric filter type in '$line'")
+            }
+
+            val filterType = when (tokens[1].uppercase(Locale.ROOT)) {
+                "PK" -> ParametricFilterType.PK
+                "LS", "LSC", "LSQ" -> ParametricFilterType.LS
+                "HS", "HSC", "HSQ" -> ParametricFilterType.HS
+                else -> return AutoEqParseResult.Error(
+                    "Unsupported parametric filter type '${tokens[1]}' in '$line'",
+                )
+            }
+
+            var freqHz: Double? = null
+            var gainDb: Double? = null
+            var qVal: Double? = null
+            var idx = 2
+
+            while (idx < tokens.size) {
+                when (tokens[idx].lowercase(Locale.ROOT)) {
+                    "fc" -> {
+                        if (freqHz != null) {
+                            return AutoEqParseResult.Error("Duplicate Fc parameter in '$line'")
+                        }
+                        if (idx + 1 >= tokens.size) {
+                            return AutoEqParseResult.Error("Missing Fc value in '$line'")
+                        }
+                        val (rawValue, nextIdx) = consumeValueAndOptionalUnit(tokens, idx + 1, "hz")
+                        val parsed = rawValue.toDoubleOrNull()
+                        if (parsed == null ||
+                            !parsed.isFinite() ||
+                            parsed !in MIN_FREQ_HZ.toDouble()..MAX_FREQ_HZ.toDouble()
+                        ) {
+                            return AutoEqParseResult.Error(
+                                "Invalid Fc '$rawValue' in '$line' (expected 10..24000 Hz)",
+                            )
+                        }
+                        freqHz = parsed
+                        idx = nextIdx
+                    }
+
+                    "gain" -> {
+                        if (gainDb != null) {
+                            return AutoEqParseResult.Error("Duplicate Gain parameter in '$line'")
+                        }
+                        if (idx + 1 >= tokens.size) {
+                            return AutoEqParseResult.Error("Missing Gain value in '$line'")
+                        }
+                        val (rawValue, nextIdx) = consumeValueAndOptionalUnit(tokens, idx + 1, "db")
+                        val parsed = rawValue.toDoubleOrNull()
+                        if (parsed == null || !parsed.isFinite()) {
+                            return AutoEqParseResult.Error(
+                                "Invalid or non-finite Gain '$rawValue' in '$line'",
+                            )
+                        }
+                        gainDb = parsed
+                        idx = nextIdx
+                    }
+
+                    "q" -> {
+                        if (qVal != null) {
+                            return AutoEqParseResult.Error("Duplicate Q parameter in '$line'")
+                        }
+                        if (idx + 1 >= tokens.size) {
+                            return AutoEqParseResult.Error("Missing Q value in '$line'")
+                        }
+                        val rawValue = tokens[idx + 1]
+                        val parsed = rawValue.toDoubleOrNull()
+                        if (parsed == null ||
+                            !parsed.isFinite() ||
+                            parsed !in MIN_PARAMETRIC_Q..MAX_PARAMETRIC_Q
+                        ) {
+                            return AutoEqParseResult.Error(
+                                "Invalid Q '$rawValue' in '$line' (expected $MIN_PARAMETRIC_Q..$MAX_PARAMETRIC_Q)",
+                            )
+                        }
+                        qVal = parsed
+                        idx += 2
+                    }
+
+                    else -> return AutoEqParseResult.Error(
+                        "Unexpected parameter '${tokens[idx]}' in '$line'",
+                    )
+                }
+            }
+
+            if (freqHz == null || gainDb == null) {
+                return AutoEqParseResult.Error("Parametric filter must specify both Fc and Gain: '$line'")
+            }
+            if (filterType == ParametricFilterType.PK && qVal == null) {
+                return AutoEqParseResult.Error("Peaking filter (PK) must specify Q: '$line'")
+            }
+
+            filters.add(
+                ParametricFilter(
+                    type = filterType,
+                    freqHz = freqHz,
+                    gainDb = gainDb,
+                    q = qVal ?: ParametricBiquadEvaluator.DEFAULT_SHELF_Q,
+                ),
+            )
+        }
+
+        if (filters.isEmpty()) {
+            return AutoEqParseResult.Error("At least 1 active ON parametric filter is required")
+        }
+
+        val gains31 = ParametricBiquadEvaluator.evaluateOnIso31(filters)
+        return AutoEqParseResult.Success(
+            gains31Db = gains31,
+            pointCount = filters.size,
+            sourceLabel = "Parametric EQ",
+        )
+    }
+
+    private fun consumeValueAndOptionalUnit(
+        tokens: List<String>,
+        valueIdx: Int,
+        unit: String,
+    ): Pair<String, Int> {
+        val raw = tokens[valueIdx]
+        return if (raw.length > unit.length && raw.endsWith(unit, ignoreCase = true)) {
+            raw.dropLast(unit.length) to (valueIdx + 1)
+        } else if (valueIdx + 1 < tokens.size && tokens[valueIdx + 1].equals(unit, ignoreCase = true)) {
+            raw to (valueIdx + 2)
+        } else {
+            raw to (valueIdx + 1)
+        }
+    }
+
+    private fun parseGraphicEq(contentLines: List<String>): AutoEqParseResult {
+        val parsedPoints = ArrayList<EqPoint>()
+        for (line in contentLines) {
+            val payload = if (line.startsWith("graphiceq:", ignoreCase = true)) {
+                line.substringAfter(':').trim()
             } else {
-                withoutComment
+                line
             }
             if (payload.isEmpty()) continue
 
@@ -73,14 +241,14 @@ object AutoEqParser {
             }
         }
 
-        if (parsedPoints.size < MIN_POINTS) {
+        parsedPoints.sortBy { it.freqHz }
+        val deduplicated = deduplicatePoints(parsedPoints)
+        if (deduplicated.size < MIN_POINTS) {
             return AutoEqParseResult.Error(
-                "At least $MIN_POINTS EQ points are required (found ${parsedPoints.size})",
+                "At least $MIN_POINTS distinct EQ points are required (found ${deduplicated.size})",
             )
         }
 
-        parsedPoints.sortBy { it.freqHz }
-        val deduplicated = deduplicatePoints(parsedPoints)
         val sourceFreqs = FloatArray(deduplicated.size) { i -> deduplicated[i].freqHz }
         val sourceGains = FloatArray(deduplicated.size) { i -> deduplicated[i].gainDb }
 
@@ -99,6 +267,7 @@ object AutoEqParser {
         return AutoEqParseResult.Success(
             gains31Db = clamped31,
             pointCount = deduplicated.size,
+            sourceLabel = "AutoEQ",
         )
     }
 
@@ -131,8 +300,8 @@ object AutoEqParser {
     }
 
     private fun isCsvHeader(first: String, second: String): Boolean {
-        val f = first.lowercase()
-        val s = second.lowercase()
+        val f = first.lowercase(Locale.ROOT)
+        val s = second.lowercase(Locale.ROOT)
         return f.contains("freq") && (s.contains("gain") || s.contains("raw") || s.contains("db"))
     }
 }

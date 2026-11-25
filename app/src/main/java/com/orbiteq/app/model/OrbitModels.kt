@@ -29,6 +29,12 @@ enum class MbcMode {
     PUNCHY,
 }
 
+enum class DeEsserMode {
+    OFF,
+    GENTLE,
+    STRONG,
+}
+
 enum class OrbitThemeMode {
     DEEP_SPACE_HUD,
     LUNAR_MONOCHROME,
@@ -148,6 +154,9 @@ data class OrbitSettings(
     val channelBalance: Float = 0f,
     val customHeadphoneProfiles: List<CustomHeadphoneProfile> = emptyList(),
     val deviceCustomProfileIds: Map<String, String> = emptyMap(),
+    val toneTiltDbPerOct: Float = 0f,
+    val deEsserMode: DeEsserMode = DeEsserMode.GENTLE,
+    val loudnessMatchedBypass: Boolean = true,
 )
 
 @Immutable
@@ -165,6 +174,9 @@ data class LiveAudioTelemetry(
     val dominantSpectralTag: String = "Balanced",
     val preEqBandCount: Int = 10,
     val activeCompensationName: String = "",
+    val liveEqCurve31Db: List<Float> = List(31) { 0f },
+    val bypassMatchGainDb: Float = 0f,
+    val mbcBandCount: Int = 5,
 )
 
 @Immutable

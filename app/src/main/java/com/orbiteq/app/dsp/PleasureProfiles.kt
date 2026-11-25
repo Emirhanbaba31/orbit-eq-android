@@ -30,23 +30,32 @@ object PleasureProfiles {
 
     private const val MIN_GAIN_DB = -15f
     private const val MAX_GAIN_DB = 15f
+    private const val MAX_TONE_TILT_DB_PER_OCT = 1.5f
+    private const val TONE_TILT_PIVOT_HZ = 1000f
+    private const val TONE_TILT_MAX_OCTAVES = 4.0f
 
-    private val NOVA_TARGET = floatArrayOf(2.8f, 3.2f, 1.4f, -0.6f, -0.4f, 0.8f, 1.8f, 2.2f, 3.0f, 2.5f)
+    private val NOVA_TARGET = floatArrayOf(3.0f, 3.2f, 0.8f, -0.8f, -0.3f, 0.8f, 1.8f, 2.2f, 2.4f, 2.8f)
     private val GRAVITY_TARGET = floatArrayOf(5.5f, 5.0f, 2.6f, -1.2f, -0.8f, 0.4f, 1.2f, 1.6f, 2.2f, 1.5f)
     private val HORIZON_TARGET = floatArrayOf(1.0f, 1.2f, 0.4f, -0.5f, 0.2f, 1.4f, 2.6f, 3.8f, 4.6f, 4.2f)
     private val ECLIPSE_TARGET = floatArrayOf(2.6f, 2.8f, 1.8f, 1.0f, 0.4f, -0.4f, -1.4f, -1.8f, -1.2f, -1.6f)
     private val COMMS_TARGET = floatArrayOf(-3.2f, -1.8f, -0.5f, 0.8f, 2.4f, 3.6f, 3.0f, 1.2f, -0.6f, -1.4f)
+
+    private val NOVA_REF_SHIFT = floatArrayOf(0.02f, 0.02f, -0.01f, -0.01f, 0f, 0f, 0.01f, 0f, -0.01f, 0.02f)
+    private val GRAVITY_REF_SHIFT = floatArrayOf(0.05f, 0.04f, 0.01f, -0.01f, 0f, 0f, 0f, 0f, 0f, 0f)
+    private val HORIZON_REF_SHIFT = floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0.01f, 0.02f, 0.04f, 0.04f)
+    private val ECLIPSE_REF_SHIFT = floatArrayOf(0.02f, 0.02f, 0.01f, 0f, 0f, 0f, -0.02f, -0.03f, -0.02f, -0.02f)
+    private val COMMS_REF_SHIFT = floatArrayOf(-0.03f, -0.02f, 0f, 0.02f, 0.03f, 0.04f, 0.02f, 0f, -0.02f, -0.02f)
 
     private val Q30_CLEAN_BASE_CURVE = floatArrayOf(-1.5f, -3.5f, -4.5f, -3.0f, -0.5f, 0.5f, 2.0f, 2.5f, -1.5f, 0.5f)
     private val Q30_SAFE_STACK_CURVE = floatArrayOf(-1.0f, -2.0f, -2.5f, -1.5f, 0.0f, 0.5f, 1.0f, 1.0f, -1.0f, 0.0f)
     private val FLAT_GENERIC_CURVE = FloatArray(10)
     private val PHONE_SPEAKER_SAFE_CURVE = floatArrayOf(-6.0f, -4.0f, -1.5f, 0.0f, 0.5f, 1.0f, 1.0f, 0.5f, 0.0f, -1.0f)
 
-    // Calibrated 31-band curves sculpting Q30's 80-250 Hz mid-bass bloom, 2.5-4 kHz dip, and 6-8 kHz resonance.
+    // Calibrated 31-band curves preserving Q30 sub-bass extension while taming 80-250 Hz bloom and 6.3-8 kHz glare.
     private val Q30_CLEAN_BASE_31_CURVE = floatArrayOf(
-        -1.0f, -1.2f, -1.5f, -2.1f, -2.8f, -3.5f, -4.2f, -4.6f, -4.8f, -4.2f,
-        -3.6f, -3.0f, -1.8f, -1.0f, -0.5f, 0.0f, 0.3f, 0.5f, 0.8f, 1.3f,
-        2.0f, 2.6f, 3.0f, 2.5f, 0.8f, -1.4f, -1.9f, -0.6f, 0.3f, 0.5f, 0.2f,
+        0.0f, -0.3f, -0.8f, -1.6f, -2.5f, -3.5f, -4.4f, -5.0f, -5.2f, -4.7f,
+        -3.9f, -3.0f, -1.8f, -0.9f, -0.3f, 0.1f, 0.4f, 0.6f, 0.9f, 1.5f,
+        2.4f, 3.2f, 3.5f, 2.6f, 0.6f, -2.2f, -2.8f, -0.8f, 0.8f, 1.0f, 0.4f,
     )
     private val Q30_SAFE_STACK_31_CURVE = floatArrayOf(
         -0.6f, -0.8f, -1.0f, -1.3f, -1.7f, -2.0f, -2.3f, -2.5f, -2.6f, -2.3f,
@@ -66,6 +75,26 @@ object PleasureProfiles {
         PleasureMode.HORIZON -> HORIZON_TARGET.copyOf()
         PleasureMode.ECLIPSE -> ECLIPSE_TARGET.copyOf()
         PleasureMode.COMMS -> COMMS_TARGET.copyOf()
+    }
+
+    fun adaptiveReferenceShiftFor(mode: PleasureMode): FloatArray = when (mode) {
+        PleasureMode.NOVA -> NOVA_REF_SHIFT.copyOf()
+        PleasureMode.GRAVITY -> GRAVITY_REF_SHIFT.copyOf()
+        PleasureMode.HORIZON -> HORIZON_REF_SHIFT.copyOf()
+        PleasureMode.ECLIPSE -> ECLIPSE_REF_SHIFT.copyOf()
+        PleasureMode.COMMS -> COMMS_REF_SHIFT.copyOf()
+    }
+
+    fun analogTiltCurve31(tiltDbPerOct: Float): FloatArray {
+        if (!tiltDbPerOct.isFinite() || tiltDbPerOct == 0f) {
+            return FloatArray(ISO_31_FREQUENCIES_HZ.size)
+        }
+        val tilt = tiltDbPerOct.coerceIn(-MAX_TONE_TILT_DB_PER_OCT, MAX_TONE_TILT_DB_PER_OCT)
+        return FloatArray(ISO_31_FREQUENCIES_HZ.size) { i ->
+            val octaves = log2(ISO_31_FREQUENCIES_HZ[i] / TONE_TILT_PIVOT_HZ)
+                .coerceIn(-TONE_TILT_MAX_OCTAVES, TONE_TILT_MAX_OCTAVES)
+            normalizeZero(tilt * octaves)
+        }
     }
 
     fun compensationCurveFor(profile: HeadphoneProfile): FloatArray = when (profile) {
