@@ -23,6 +23,12 @@ enum class HeadphoneProfile {
     PHONE_SPEAKER_SAFE,
 }
 
+enum class MbcMode {
+    OFF,
+    SUBTLE,
+    PUNCHY,
+}
+
 enum class OrbitThemeMode {
     DEEP_SPACE_HUD,
     LUNAR_MONOCHROME,
@@ -91,6 +97,15 @@ data class CustomPreset(
 )
 
 @Immutable
+data class CustomHeadphoneProfile(
+    val id: String,
+    val name: String,
+    val gains31Db: List<Float>,
+    val extraHeadroomDb: Float = 0f,
+    val sourceLabel: String = "AutoEQ",
+)
+
+@Immutable
 data class NowPlayingInfo(
     val packageName: String? = null,
     val appName: String = "",
@@ -127,6 +142,12 @@ data class OrbitSettings(
     val deviceProfiles: Map<String, HeadphoneProfile> = emptyMap(),
     val deviceDefaultModes: Map<String, PleasureMode> = emptyMap(),
     val customPresets: List<CustomPreset> = emptyList(),
+    val mbcMode: MbcMode = MbcMode.SUBTLE,
+    val subsonicFilterEnabled: Boolean = true,
+    val trueHeadroomMode: Boolean = false,
+    val channelBalance: Float = 0f,
+    val customHeadphoneProfiles: List<CustomHeadphoneProfile> = emptyList(),
+    val deviceCustomProfileIds: Map<String, String> = emptyMap(),
 )
 
 @Immutable
@@ -142,6 +163,8 @@ data class LiveAudioTelemetry(
     val loudnessBoostDb: Float = 0f,
     val limiterCeilingDb: Float = -0.5f,
     val dominantSpectralTag: String = "Balanced",
+    val preEqBandCount: Int = 10,
+    val activeCompensationName: String = "",
 )
 
 @Immutable
@@ -156,4 +179,5 @@ data class OrbitUiState(
     val connectedDevice: ConnectedOutputDevice = ConnectedOutputDevice(),
     val telemetry: LiveAudioTelemetry = LiveAudioTelemetry(),
     val recentActivity: List<TrackActivityEntry> = emptyList(),
+    val activeCustomHeadphoneProfile: CustomHeadphoneProfile? = null,
 )
