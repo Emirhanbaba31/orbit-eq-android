@@ -335,10 +335,14 @@ private fun LiveEngineTelemetryCard(
     OrbitGlassCard(highlighted = effectiveStatus == EngineStatus.AUTO_FFT_LOCKED) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SectionLabelText(text = stringResource(R.string.activity_telemetry_title))
+            SectionLabelText(
+                text = stringResource(R.string.activity_telemetry_title),
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+            )
             OrbitStatusChip(text = statusText, accentColor = statusAccent)
         }
 
@@ -557,10 +561,14 @@ private fun HeadphoneCompensationCard(
     OrbitGlassCard(highlighted = uiState.connectedDevice.isSoundcoreQ30) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SectionLabelText(text = stringResource(R.string.headphone_profile_title))
+            SectionLabelText(
+                text = stringResource(R.string.headphone_profile_title),
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+            )
             if (uiState.connectedDevice.isSoundcoreQ30) {
                 OrbitStatusChip(
                     text = stringResource(R.string.q30_detected_badge),
@@ -1292,7 +1300,7 @@ private fun AppRuleEditorDialog(
                             if (isBypassSelected) colors.danger.copy(alpha = 0.22f) else colors.surface,
                         )
                         .border(
-                            width = 1.dp,
+                            width = if (isBypassSelected) 1.5.dp else 1.dp,
                             color = if (isBypassSelected) colors.danger else colors.borderHairline,
                             shape = RoundedCornerShape(12.dp),
                         )
@@ -1309,14 +1317,14 @@ private fun AppRuleEditorDialog(
                         text = stringResource(R.string.rule_action_bypass),
                         style = MaterialTheme.typography.titleSmall.copy(
                             fontWeight = FontWeight.Bold,
-                            color = if (isBypassSelected) colors.danger else colors.textPrimary,
+                            color = colors.textPrimary,
                         ),
                     )
                     if (isBypassSelected) {
                         Icon(
                             imageVector = OrbitIcons.CheckCircle,
                             contentDescription = null,
-                            tint = colors.danger,
+                            tint = colors.textPrimary,
                             modifier = Modifier.size(18.dp),
                         )
                     }

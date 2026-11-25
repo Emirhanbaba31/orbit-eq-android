@@ -314,7 +314,7 @@ private fun LimiterPreampCard(
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = colors.textSecondary,
                         ),
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -400,45 +400,35 @@ private fun MbcPunchCard(
                     onValueChange = onMbcEnabledChange,
                 ),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Row(
+            Icon(
+                imageVector = OrbitIcons.SparkBolt,
+                contentDescription = null,
+                tint = if (mbcEnabled) colors.ionAccent else colors.textMuted,
+                modifier = Modifier.size(22.dp),
+            )
+
+            Column(
                 modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Icon(
-                    imageVector = OrbitIcons.SparkBolt,
-                    contentDescription = null,
-                    tint = if (mbcEnabled) colors.ionAccent else colors.textMuted,
-                    modifier = Modifier.size(22.dp),
+                Text(
+                    text = stringResource(R.string.dsp_mbc_title),
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        color = colors.textPrimary,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        text = stringResource(R.string.dsp_mbc_title),
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            color = colors.textPrimary,
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = stringResource(R.string.dsp_mbc_desc),
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = colors.textSecondary,
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+                Text(
+                    text = stringResource(R.string.dsp_mbc_desc),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = colors.textSecondary,
+                    ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 OrbitStatusChip(
                     text = if (mbcEnabled) {
                         stringResource(R.string.dsp_mbc_active)
@@ -447,19 +437,20 @@ private fun MbcPunchCard(
                     },
                     accentColor = if (mbcEnabled) colors.ionAccent else colors.textMuted,
                 )
-                Switch(
-                    checked = mbcEnabled,
-                    onCheckedChange = null,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = colors.onPrimaryAccent,
-                        checkedTrackColor = colors.primaryAccent,
-                        checkedBorderColor = colors.ionAccent,
-                        uncheckedThumbColor = colors.textSecondary,
-                        uncheckedTrackColor = colors.surface,
-                        uncheckedBorderColor = colors.borderHairline,
-                    ),
-                )
             }
+
+            Switch(
+                checked = mbcEnabled,
+                onCheckedChange = null,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = colors.onPrimaryAccent,
+                    checkedTrackColor = colors.primaryAccent,
+                    checkedBorderColor = colors.ionAccent,
+                    uncheckedThumbColor = colors.textSecondary,
+                    uncheckedTrackColor = colors.surface,
+                    uncheckedBorderColor = colors.borderHairline,
+                ),
+            )
         }
     }
 }
@@ -551,10 +542,14 @@ private fun CustomPresetsCard(
     OrbitGlassCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SectionLabelText(text = stringResource(R.string.presets_section_title))
+            SectionLabelText(
+                text = stringResource(R.string.presets_section_title),
+                modifier = Modifier.weight(1f),
+                maxLines = 2,
+            )
             Button(
                 onClick = onOpenSaveDialog,
                 modifier = Modifier.heightIn(min = 48.dp),

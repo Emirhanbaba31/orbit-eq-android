@@ -360,7 +360,11 @@ private fun NowPlayingTelemetryPill(
                     .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .background(abContainerColor)
-                    .border(1.dp, abBorderColor, RoundedCornerShape(14.dp))
+                    .border(
+                        width = if (effectiveBypass) 1.5.dp else 1.dp,
+                        color = abBorderColor,
+                        shape = RoundedCornerShape(14.dp),
+                    )
                     .toggleable(
                         value = isManualBypass,
                         role = Role.Switch,
@@ -377,7 +381,7 @@ private fun NowPlayingTelemetryPill(
                     style = SpaceMonoTabularStyle.copy(
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (effectiveBypass) colors.danger else colors.textPrimary,
+                        color = colors.textPrimary,
                     ),
                     maxLines = 1,
                 )
@@ -481,10 +485,13 @@ private fun PleasureModeSelectorSection(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SectionLabelText(text = stringResource(R.string.studio_section_modes))
+            SectionLabelText(
+                text = stringResource(R.string.studio_section_modes),
+                modifier = Modifier.weight(1f),
+            )
             Text(
                 text = modeDisplayName(activeMode),
                 style = SpaceMonoTabularStyle.copy(
@@ -777,11 +784,12 @@ private fun MacroDbSlider(
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = label,
+                modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.titleSmall.copy(
                     color = colors.textPrimary,
                 ),

@@ -304,6 +304,7 @@ internal fun OrbitGlassCard(
 internal fun SectionLabelText(
     text: String,
     modifier: Modifier = Modifier,
+    maxLines: Int = 1,
 ) {
     val colors = LocalOrbitColors.current
     Text(
@@ -315,7 +316,7 @@ internal fun SectionLabelText(
             letterSpacing = 0.8.sp,
             color = colors.textMuted,
         ),
-        maxLines = 1,
+        maxLines = maxLines,
         overflow = TextOverflow.Ellipsis,
     )
 }
