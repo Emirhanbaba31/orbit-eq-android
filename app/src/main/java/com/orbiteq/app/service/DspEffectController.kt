@@ -96,8 +96,8 @@ class DspEffectController(
             matchedBypass = isMatchedBypass,
         )
         isRampActive = smoothed.isRampActive
-        val effectiveMbcMode = if (isMatchedBypass) MbcMode.OFF else mbcMode
-        val effectiveDeEsserMode = if (isMatchedBypass) DeEsserMode.OFF else deEsserMode
+        val effectiveMbcMode = if (smoothed.holdMbcOff) MbcMode.OFF else mbcMode
+        val effectiveDeEsserMode = if (smoothed.holdMbcOff) DeEsserMode.OFF else deEsserMode
         try {
             handle.apply(
                 frame = smoothed.frame,
@@ -168,12 +168,14 @@ internal data class SmoothedFrameResult(
     val frame: EqEngineFrame,
     val effectiveActive: Boolean,
     val isRampActive: Boolean,
+    val holdMbcOff: Boolean = false,
 )
 
 internal class DspGainSmoother {
 
     private var bypassRamp: Float = 0f
     private var eqRamp: Float = 0f
+    private var inMatchedBypass: Boolean = false
     private val currentPreEq31 = FloatArray(PRE_EQ_31_BAND_COUNT)
     private val currentPreEq10 = FloatArray(BAND_COUNT_10)
     private val currentPostEq10 = FloatArray(BAND_COUNT_10)
@@ -185,6 +187,7 @@ internal class DspGainSmoother {
     fun reset() {
         bypassRamp = 0f
         eqRamp = 0f
+        inMatchedBypass = false
         currentPreEq31.fill(0f)
         currentPreEq10.fill(0f)
         currentPostEq10.fill(0f)
@@ -199,6 +202,13 @@ internal class DspGainSmoother {
         active: Boolean,
         matchedBypass: Boolean = false,
     ): SmoothedFrameResult {
+        if (active) {
+            inMatchedBypass = false
+        } else if (matchedBypass) {
+            inMatchedBypass = true
+        }
+        val holdMbcOff = matchedBypass || inMatchedBypass
+
         val isEngaged = active || matchedBypass
         val prevBypassRamp = bypassRamp
         bypassRamp = if (isEngaged) {
@@ -229,6 +239,7 @@ internal class DspGainSmoother {
                 ),
                 effectiveActive = false,
                 isRampActive = false,
+                holdMbcOff = holdMbcOff,
             )
         }
 
@@ -324,6 +335,7 @@ internal class DspGainSmoother {
             ),
             effectiveActive = true,
             isRampActive = needsAnotherTick,
+            holdMbcOff = holdMbcOff,
         )
     }
 

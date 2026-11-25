@@ -823,6 +823,8 @@ class DspEffectControllerTest {
         )
         assertTrue(controller.isRampActive)
         assertTrue("Raw bypass tick 1 from matched bypass must keep handle active while fading", handle.applyCalls[rawStartIdx].active)
+        assertEquals(MbcMode.OFF, handle.applyCalls[rawStartIdx].mbcMode)
+        assertEquals(DeEsserMode.OFF, handle.applyCalls[rawStartIdx].deEsserMode)
         assertEquals(-3.2f * 0.66f, handle.applyCalls[rawStartIdx].frame.inputGainDb, 0.05f)
 
         controller.apply(
@@ -833,6 +835,8 @@ class DspEffectControllerTest {
         )
         assertTrue(controller.isRampActive)
         assertTrue(handle.applyCalls[rawStartIdx + 1].active)
+        assertEquals(MbcMode.OFF, handle.applyCalls[rawStartIdx + 1].mbcMode)
+        assertEquals(DeEsserMode.OFF, handle.applyCalls[rawStartIdx + 1].deEsserMode)
         assertEquals(-3.2f * 0.32f, handle.applyCalls[rawStartIdx + 1].frame.inputGainDb, 0.05f)
 
         controller.apply(
@@ -843,6 +847,8 @@ class DspEffectControllerTest {
         )
         assertFalse(controller.isRampActive)
         assertFalse("Raw bypass tick 3 must disable native handle cleanly", handle.applyCalls[rawStartIdx + 2].active)
+        assertEquals(MbcMode.OFF, handle.applyCalls[rawStartIdx + 2].mbcMode)
+        assertEquals(DeEsserMode.OFF, handle.applyCalls[rawStartIdx + 2].deEsserMode)
         assertEquals(0f, handle.applyCalls[rawStartIdx + 2].frame.inputGainDb, 0.001f)
     }
 
