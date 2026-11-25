@@ -199,13 +199,12 @@ internal class DspGainSmoother {
         }
 
         fun slewScalar(current: Float, rawTarget: Float): Float {
-            val desired = if (active) {
-                sanitizeDb(rawTarget) * bypassRamp
-            } else {
-                current * fadeScale
+            if (!active) {
+                return current * fadeScale
             }
+            val desired = sanitizeDb(rawTarget) * bypassRamp
             val next = slewToward(current, desired, MAX_SLEW_STEP_DB)
-            if (active && abs(next - desired) > SETTLE_EPSILON_DB) {
+            if (abs(next - desired) > SETTLE_EPSILON_DB) {
                 needsAnotherTick = true
             }
             return next

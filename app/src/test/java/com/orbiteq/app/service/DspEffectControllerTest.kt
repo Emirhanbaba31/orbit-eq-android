@@ -269,6 +269,59 @@ class DspEffectControllerTest {
     }
 
     @Test
+    fun bypassFadeOutFromHighGainsRampsProportionallyWithoutSlewStall() {
+        val factory = FakeDspBackendFactory()
+        val controller = DspEffectController(factory)
+        controller.attach(100)
+        val handle = factory.createdHandles.single()
+
+        val highGainFrame = sampleFrame(
+            preEq31Val = -12.0f,
+            postEqVal = 12.0f,
+            inputGainDb = -12.0f,
+            leftTrimDb = -12.0f,
+        )
+        // 4 ticks needed while engaged because +/-3.0 dB/tick slew limit caps +/-12 dB jumps
+        repeat(4) {
+            controller.apply(highGainFrame, mbcMode = MbcMode.SUBTLE, active = true)
+        }
+        assertFalse(controller.isRampActive)
+        assertEquals(-12.0f, handle.applyCalls.last().frame.preEq31Db[0], 0.001f)
+        assertEquals(12.0f, handle.applyCalls.last().frame.postEqDb[0], 0.001f)
+        assertEquals(-12.0f, handle.applyCalls.last().frame.inputGainDb, 0.001f)
+        assertEquals(-12.0f, handle.applyCalls.last().frame.leftBalanceTrimDb, 0.001f)
+
+        val baseIndex = handle.applyCalls.size
+
+        // Tick 1 of bypass: proportional 0.66x fade (-7.92 dB, NOT stalled at -9.0 dB)
+        controller.apply(highGainFrame, mbcMode = MbcMode.SUBTLE, active = false)
+        assertTrue(controller.isRampActive)
+        assertTrue(handle.applyCalls[baseIndex].active)
+        assertEquals(-12.0f * 0.66f, handle.applyCalls[baseIndex].frame.preEq31Db[0], 0.01f)
+        assertEquals(12.0f * 0.66f, handle.applyCalls[baseIndex].frame.postEqDb[0], 0.01f)
+        assertEquals(-12.0f * 0.66f, handle.applyCalls[baseIndex].frame.inputGainDb, 0.01f)
+        assertEquals(-12.0f * 0.66f, handle.applyCalls[baseIndex].frame.leftBalanceTrimDb, 0.01f)
+
+        // Tick 2 of bypass: proportional 0.32x fade (-3.84 dB, NOT stalled at -6.0 dB)
+        controller.apply(highGainFrame, mbcMode = MbcMode.SUBTLE, active = false)
+        assertTrue(controller.isRampActive)
+        assertTrue(handle.applyCalls[baseIndex + 1].active)
+        assertEquals(-12.0f * 0.32f, handle.applyCalls[baseIndex + 1].frame.preEq31Db[0], 0.01f)
+        assertEquals(12.0f * 0.32f, handle.applyCalls[baseIndex + 1].frame.postEqDb[0], 0.01f)
+        assertEquals(-12.0f * 0.32f, handle.applyCalls[baseIndex + 1].frame.inputGainDb, 0.01f)
+        assertEquals(-12.0f * 0.32f, handle.applyCalls[baseIndex + 1].frame.leftBalanceTrimDb, 0.01f)
+
+        // Tick 3 of bypass: bypassRamp <= 0.01f disables native handle cleanly from -3.84 dB to 0 dB
+        controller.apply(highGainFrame, mbcMode = MbcMode.SUBTLE, active = false)
+        assertFalse(controller.isRampActive)
+        assertFalse(handle.applyCalls[baseIndex + 2].active)
+        assertEquals(0f, handle.applyCalls[baseIndex + 2].frame.preEq31Db[0], 0.001f)
+        assertEquals(0f, handle.applyCalls[baseIndex + 2].frame.postEqDb[0], 0.001f)
+        assertEquals(0f, handle.applyCalls[baseIndex + 2].frame.inputGainDb, 0.001f)
+        assertEquals(0f, handle.applyCalls[baseIndex + 2].frame.leftBalanceTrimDb, 0.001f)
+    }
+
+    @Test
     fun legacyMbcBooleanOverloadDelegatesToSubtleAndOff() {
         val factory = FakeDspBackendFactory()
         val controller = DspEffectController(factory)
