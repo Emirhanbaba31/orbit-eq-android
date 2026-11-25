@@ -188,5 +188,19 @@ class HistoryCodecTest {
         val nonFiniteDecoded = HistoryCodec.decodeTrims(nonFiniteEncoded)
         assertEquals(10, nonFiniteDecoded.size)
         assertEquals(listOf(0f, 0f, 2.25f, 0f, 0f, 0f, 0f, 0f, 0f, 0f), nonFiniteDecoded)
+
+        val overflowTrims = HistoryCodec.decodeTrims("[1e100, -1e100, 2.5]")
+        assertEquals(10, overflowTrims.size)
+        assertEquals(listOf(0f, 0f, 2.5f, 0f, 0f, 0f, 0f, 0f, 0f, 0f), overflowTrims)
+        assertTrue(overflowTrims.all { it.isFinite() })
+
+        val overflowPresetJson =
+            """[{"id":"p1","name":"Overflow","mode":"NOVA","intensity":78,"bassMacroDb":1e100,"airMacroDb":-1e100,"trimsDb":[1e100,-1e100,1.5]}]"""
+        val decodedPresets = HistoryCodec.decodeCustomPresets(overflowPresetJson)
+        assertEquals(1, decodedPresets.size)
+        assertEquals(0f, decodedPresets[0].bassMacroDb, 0.0001f)
+        assertEquals(0f, decodedPresets[0].airMacroDb, 0.0001f)
+        assertTrue(decodedPresets[0].trimsDb.all { it.isFinite() })
+        assertEquals(1.5f, decodedPresets[0].trimsDb[2], 0.0001f)
     }
 }

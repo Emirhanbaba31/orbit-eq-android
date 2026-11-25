@@ -56,15 +56,15 @@ class FgsTierPlannerTest {
         assertFalse(FgsTierPlanner.isForegroundEligibleAction(FgsTierPlanner.ACTION_START_BACKGROUND_SAFE))
         assertFalse(FgsTierPlanner.isForegroundEligibleAction(null))
 
-        // Once promoted, notification A/B bypass & session updates must NOT re-call startForeground(..., MICROPHONE).
+        // Once promoted, background-safe starts, notification A/B bypass, & session updates must NOT downgrade or re-promote.
+        assertFalse(FgsTierPlanner.shouldPromoteForeground(isForegroundPromoted = true, action = FgsTierPlanner.ACTION_START_BACKGROUND_SAFE))
         assertFalse(FgsTierPlanner.shouldPromoteForeground(isForegroundPromoted = true, action = FgsTierPlanner.ACTION_TOGGLE_BYPASS))
         assertFalse(FgsTierPlanner.shouldPromoteForeground(isForegroundPromoted = true, action = FgsTierPlanner.ACTION_UPDATE_SESSION))
         assertFalse(FgsTierPlanner.shouldPromoteForeground(isForegroundPromoted = true, action = null))
 
-        // Explicit start/promote actions remain allowed and foreground-eligible only for full start / promote.
+        // Explicit foreground start/promote actions remain eligible for promotion.
         assertTrue(FgsTierPlanner.shouldPromoteForeground(isForegroundPromoted = true, action = FgsTierPlanner.ACTION_START_FOREGROUND_FULL))
         assertTrue(FgsTierPlanner.shouldPromoteForeground(isForegroundPromoted = true, action = FgsTierPlanner.ACTION_PROMOTE_TO_FULL))
-        assertTrue(FgsTierPlanner.shouldPromoteForeground(isForegroundPromoted = true, action = FgsTierPlanner.ACTION_START_BACKGROUND_SAFE))
         assertTrue(FgsTierPlanner.isForegroundEligibleAction(FgsTierPlanner.ACTION_START_FOREGROUND_FULL))
         assertTrue(FgsTierPlanner.isForegroundEligibleAction(FgsTierPlanner.ACTION_PROMOTE_TO_FULL))
     }

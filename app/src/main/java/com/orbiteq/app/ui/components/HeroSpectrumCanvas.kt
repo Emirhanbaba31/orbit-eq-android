@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -62,6 +63,7 @@ import com.orbiteq.app.R
 import com.orbiteq.app.dsp.PleasureProfiles
 import com.orbiteq.app.model.EngineStatus
 import com.orbiteq.app.model.PleasureMode
+import com.orbiteq.app.ui.LocalReducedMotion
 import com.orbiteq.app.ui.icons.OrbitIcons
 import com.orbiteq.app.ui.theme.LocalOrbitColors
 import com.orbiteq.app.ui.theme.SpaceMonoTabularStyle
@@ -196,7 +198,7 @@ fun HeroSpectrumCanvas(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalOrbitColors.current
-    val reducedMotion = rememberReducedMotionEnabled()
+    val reducedMotion = LocalReducedMotion.current
 
     val effectiveStatus = if (!powerEnabled) EngineStatus.IDLE else engineStatus
     val isLiveProcessing = powerEnabled && effectiveStatus != EngineStatus.BYPASSED && effectiveStatus != EngineStatus.IDLE
@@ -315,40 +317,36 @@ fun HeroSpectrumCanvas(
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 10.dp),
             ) {
-                // Top HUD Telemetry Row
-                Row(
+                // Top HUD Telemetry FlowRow (wraps cleanly on 360dp + large fonts without truncating status)
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    itemVerticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Box(
-                        modifier = Modifier.weight(1f),
-                        contentAlignment = Alignment.CenterStart,
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(colors.surface.copy(alpha = 0.85f))
+                            .border(1.dp, colors.borderHairline, RoundedCornerShape(999.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(999.dp))
-                                .background(colors.surface.copy(alpha = 0.85f))
-                                .border(1.dp, colors.borderHairline, RoundedCornerShape(999.dp))
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            StatusPulseDot(
-                                color = statusDotColor,
-                                pulsing = effectiveStatus == EngineStatus.AUTO_FFT_LOCKED && !reducedMotion,
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = statusText,
-                                style = SpaceMonoTabularStyle.copy(
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = colors.textPrimary,
-                                ),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
+                        StatusPulseDot(
+                            color = statusDotColor,
+                            pulsing = effectiveStatus == EngineStatus.AUTO_FFT_LOCKED && !reducedMotion,
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = statusText,
+                            style = SpaceMonoTabularStyle.copy(
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = colors.textPrimary,
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
 
                     HudTelemetryChip(

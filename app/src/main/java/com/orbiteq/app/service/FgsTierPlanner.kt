@@ -36,7 +36,6 @@ object FgsTierPlanner {
     ): Boolean {
         if (!isForegroundPromoted) return true
         return action == ACTION_START_FOREGROUND_FULL ||
-            action == ACTION_START_BACKGROUND_SAFE ||
             action == ACTION_PROMOTE_TO_FULL
     }
 

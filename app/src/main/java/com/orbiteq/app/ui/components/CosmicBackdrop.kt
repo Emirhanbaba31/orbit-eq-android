@@ -1,10 +1,5 @@
 package com.orbiteq.app.ui.components
 
-import android.content.Context
-import android.database.ContentObserver
-import android.os.Handler
-import android.os.Looper
-import android.provider.Settings
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -17,24 +12,20 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.State
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.orbiteq.app.model.OrbitThemeMode
 import com.orbiteq.app.model.PleasureMode
+import com.orbiteq.app.ui.LocalReducedMotion
 import com.orbiteq.app.ui.theme.DeepSpaceOrbitColors
 import com.orbiteq.app.ui.theme.LunarMonochromeOrbitColors
 import kotlin.math.PI
@@ -54,51 +45,6 @@ private data class StarNode(
 )
 
 @Composable
-internal fun rememberReducedMotionEnabled(): Boolean {
-    val context = LocalContext.current
-    var reduced by remember(context) {
-        mutableStateOf(readAnimatorScaleZero(context))
-    }
-
-    DisposableEffect(context) {
-        val resolver = context.contentResolver
-        val uri = Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE)
-        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
-            override fun onChange(selfChange: Boolean) {
-                reduced = readAnimatorScaleZero(context)
-            }
-        }
-        try {
-            resolver.registerContentObserver(uri, false, observer)
-        } catch (_: SecurityException) {
-            // Keep initial read value if global settings observer is restricted.
-        }
-        onDispose {
-            try {
-                resolver.unregisterContentObserver(observer)
-            } catch (_: IllegalStateException) {
-                // Ignore if already unregistered.
-            }
-        }
-    }
-
-    return reduced
-}
-
-private fun readAnimatorScaleZero(context: Context): Boolean {
-    return try {
-        val scale = Settings.Global.getFloat(
-            context.contentResolver,
-            Settings.Global.ANIMATOR_DURATION_SCALE,
-            1.0f,
-        )
-        scale <= 0f
-    } catch (_: SecurityException) {
-        false
-    }
-}
-
-@Composable
 fun CosmicBackdrop(
     activeMode: PleasureMode,
     powerEnabled: Boolean,
@@ -109,7 +55,7 @@ fun CosmicBackdrop(
         OrbitThemeMode.DEEP_SPACE_HUD -> DeepSpaceOrbitColors
         OrbitThemeMode.LUNAR_MONOCHROME -> LunarMonochromeOrbitColors
     }
-    val reducedMotion = rememberReducedMotionEnabled()
+    val reducedMotion = LocalReducedMotion.current
 
     val targetNebula = colors.modeTint(activeMode)
     val animatedNebulaState = animateColorAsState(

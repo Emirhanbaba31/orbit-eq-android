@@ -15,6 +15,8 @@
     <string name="device_wired_default">Kablolu / USB Ses</string>
     <string name="ab_bypass_label">A/B</string>
     <string name="ab_bypass_cd">A/B önce-sonra karşılaştırmasını aç veya kapat</string>
+    <string name="ab_bypass_auto_label">AUTO</string>
+    <string name="ab_bypass_auto_cd">Uygulama kuralı nedeniyle otomatik bypass aktif</string>
     <string name="power_toggle_cd">ORBIT EQ motor gücünü aç veya kapat</string>
     <string name="save_for_app_chip">Uygulamaya Kaydet</string>
     <string name="mode_source_manual">Geçici Seçim</string>
@@ -140,8 +142,6 @@
     <string name="notif_channel_name">ORBIT EQ Ses Motoru</string>
     <string name="notif_channel_desc">Müzik çalarken gerçek zamanlı Auto-EQ motorunu aktif tutar</string>
     <string name="notif_action_bypass">A/B Bypass</string>
-    <string name="notif_action_pause">Duraklat</string>
-    <string name="notif_action_resume">Devam Et</string>
     <string name="notif_action_stop">Durdur</string>
     <string name="notif_title_fmt">%1$s · %2$s</string>
     <string name="notif_state_live">AUTO FFT</string>

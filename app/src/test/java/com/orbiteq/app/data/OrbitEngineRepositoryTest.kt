@@ -264,6 +264,59 @@ class OrbitEngineRepositoryTest {
 
         assertEquals("Sub-Heavy", OrbitEngineRepository.uiState.value.recentActivity.first().spectralTag)
         assertEquals("Sub-Heavy", gateway.currentHistory().first().spectralTag)
+
+        // Switching to a fresh track must initialize its spectralTag to "Balanced", NOT inherit "Sub-Heavy".
+        OrbitEngineRepository.updateNowPlaying(
+            NowPlayingInfo(
+                packageName = "com.spotify.music",
+                appName = "Spotify",
+                trackTitle = "Fresh Acoustic Track",
+                artist = "New Artist",
+                isPlaying = true,
+            ),
+        )
+        OrbitEngineRepository.flushPersistenceForTesting()
+        assertEquals("Fresh Acoustic Track", OrbitEngineRepository.uiState.value.recentActivity.first().trackTitle)
+        assertEquals("Balanced", OrbitEngineRepository.uiState.value.recentActivity.first().spectralTag)
+        assertEquals("Balanced", gateway.currentHistory().first().spectralTag)
+    }
+
+    @Test
+    fun selectModeManuallyNormalizesDeviceDefaultModeKeys() = runBlocking {
+        val gateway = FakeOrbitPersistenceGateway(
+            initialSettings = OrbitSettings(
+                appRules = AppRuleResolver.defaultAppRules(),
+                deviceDefaultModes = mapOf("  Soundcore Life Q30  " to PleasureMode.ECLIPSE),
+            ),
+        )
+        OrbitEngineRepository.initForTesting(gateway)
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        OrbitEngineRepository.updateConnectedDevice(
+            ConnectedOutputDevice(
+                name = "Soundcore Life Q30",
+                isBluetooth = true,
+                isSpeaker = false,
+                isSoundcoreQ30 = true,
+            ),
+        )
+        OrbitEngineRepository.updateNowPlaying(
+            NowPlayingInfo(
+                packageName = "com.custom.unlisted.player",
+                appName = "Custom Player",
+                trackTitle = "Test Track",
+                artist = "Artist",
+                isPlaying = true,
+            ),
+        )
+
+        OrbitEngineRepository.selectModeManually(PleasureMode.GRAVITY)
+        OrbitEngineRepository.flushPersistenceForTesting()
+
+        val uiDefaults = OrbitEngineRepository.uiState.value.settings.deviceDefaultModes
+        val persistedDefaults = gateway.currentSettings().deviceDefaultModes
+        assertEquals(mapOf("soundcore life q30" to PleasureMode.GRAVITY), uiDefaults)
+        assertEquals(mapOf("soundcore life q30" to PleasureMode.GRAVITY), persistedDefaults)
     }
 
     @Test

@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -55,6 +57,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -96,6 +99,7 @@ fun MixerScreen(
 ) {
     val colors = LocalOrbitColors.current
     val haptic = LocalHapticFeedback.current
+    val layoutDirection = LocalLayoutDirection.current
     var showSaveDialog by rememberSaveable { mutableStateOf(false) }
 
     val hasAnyTrim = remember(uiState.settings.manualTrimsDb) {
@@ -112,8 +116,8 @@ fun MixerScreen(
             .fillMaxSize()
             .widthIn(max = 720.dp),
         contentPadding = PaddingValues(
-            start = 16.dp,
-            end = 16.dp,
+            start = contentPadding.calculateStartPadding(layoutDirection) + 16.dp,
+            end = contentPadding.calculateEndPadding(layoutDirection) + 16.dp,
             top = contentPadding.calculateTopPadding(),
             bottom = contentPadding.calculateBottomPadding(),
         ),

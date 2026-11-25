@@ -44,7 +44,7 @@ ORBIT EQ surfaces an interactive **Engine Setup & Permissions** checklist in the
 | **Audio Spectrum Capture (`RECORD_AUDIO`)** | Required by Android's `Visualizer` API to read playback output spectrum. **ORBIT EQ never records voice or microphone input.** | Triggers Android's system **green status-bar dot** while live FFT (`TIER1_LIVE_FFT`) is running. |
 | **Two-Tier Foreground Service (`mediaPlayback\|microphone`)** | Keeps DSP active reliably across foreground and background starts. | Starts in `AUTO FFT · LOCKED` when launched from the foreground with `RECORD_AUDIO`; falls back to `PROFILE FALLBACK` (`TIER2_PROFILE_ONLY`, no Visualizer) if started in the background, without `RECORD_AUDIO`, or on DRM streams. |
 | **Music Activity Access (`BIND_NOTIFICATION_LISTENER_SERVICE`)** | Reads active media app, track title, and artist. | Powers automatic per-app rules (`USE_MODE` / `BYPASS`), pinned tracks, and listening history. |
-| **Engine Status Notification (`POST_NOTIFICATIONS`)** | Persistent foreground service notification. | Exposes quick `A/B Bypass`, `Pause`/`Resume`, and `Stop` controls from the shade. |
+| **Engine Status Notification (`POST_NOTIFICATIONS`)** | Persistent foreground service notification. | Exposes quick `A/B Bypass` and `Stop` controls from the shade. |
 | **Unrestricted Battery (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`)** | Battery optimization exemption. | Prevents Android from suspending the audio engine when the screen turns off. |
 
 ---

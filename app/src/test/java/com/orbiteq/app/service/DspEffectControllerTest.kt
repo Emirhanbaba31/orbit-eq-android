@@ -130,6 +130,24 @@ class DspEffectControllerTest {
         controller.apply(sampleFrame(), mbcEnabled = false, active = true)
     }
 
+    @Test
+    fun applyRuntimeExceptionReleasesHandleAndResetsBackendToNone() {
+        val factory = FakeDspBackendFactory(
+            applyFailure = { IllegalStateException("DynamicsProcessing setEnabled(true) failed: -1") },
+        )
+        val controller = DspEffectController(factory)
+
+        assertEquals(DspBackend.DYNAMICS_PROCESSING, controller.attach(1234))
+        assertEquals(1, factory.activeHandlesCount())
+
+        controller.apply(sampleFrame(), mbcEnabled = true, active = true)
+
+        assertEquals(1, factory.createdHandles.single().releaseCount)
+        assertEquals(0, factory.activeHandlesCount())
+        assertEquals(DspBackend.NONE, controller.currentBackend)
+        assertEquals(0, controller.currentSessionId)
+    }
+
     private fun sampleFrame(): EqEngineFrame = EqEngineFrame(
         preEqDb = FloatArray(10),
         postEqDb = FloatArray(10) { 1.0f },
@@ -151,12 +169,14 @@ class DspEffectControllerTest {
     private class FakeHandle(
         override val backend: DspBackend,
         override val sessionId: Int,
+        private val applyFailure: (() -> Throwable?) = { null },
     ) : DspSessionHandle {
         val applyCalls = mutableListOf<ApplyCall>()
         var releaseCount: Int = 0
             private set
 
         override fun apply(frame: EqEngineFrame, mbcEnabled: Boolean, active: Boolean) {
+            applyFailure()?.let { throw it }
             applyCalls += ApplyCall(frame = frame, mbcEnabled = mbcEnabled, active = active)
         }
 
@@ -168,17 +188,18 @@ class DspEffectControllerTest {
     private class FakeDspBackendFactory(
         private val dpFailure: (Int) -> Throwable? = { null },
         private val legacyFailure: (Int) -> Throwable? = { null },
+        private val applyFailure: () -> Throwable? = { null },
     ) : DspBackendFactory {
         val createdHandles = mutableListOf<FakeHandle>()
 
         override fun createDynamicsProcessing(sessionId: Int): DspSessionHandle {
             dpFailure(sessionId)?.let { throw it }
-            return FakeHandle(DspBackend.DYNAMICS_PROCESSING, sessionId).also { createdHandles += it }
+            return FakeHandle(DspBackend.DYNAMICS_PROCESSING, sessionId, applyFailure).also { createdHandles += it }
         }
 
         override fun createLegacyEqualizer(sessionId: Int): DspSessionHandle {
             legacyFailure(sessionId)?.let { throw it }
-            return FakeHandle(DspBackend.LEGACY_EQ, sessionId).also { createdHandles += it }
+            return FakeHandle(DspBackend.LEGACY_EQ, sessionId, applyFailure).also { createdHandles += it }
         }
 
         fun activeHandlesCount(): Int = createdHandles.count { it.releaseCount == 0 }

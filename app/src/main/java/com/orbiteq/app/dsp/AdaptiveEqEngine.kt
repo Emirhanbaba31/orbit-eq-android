@@ -68,6 +68,7 @@ class AdaptiveEqEngine {
         volumeRatio: Float,
         headphoneProfile: HeadphoneProfile,
         manualTrimsDb: List<Float>,
+        fftCaptureAvailable: Boolean = true,
     ): EqEngineFrame {
         if (!powerEnabled) {
             reset()
@@ -84,7 +85,11 @@ class AdaptiveEqEngine {
             )
         }
 
-        val spectral = if (fftBytes != null) FftAnalyzer.analyze(fftBytes) else EMPTY_SPECTRAL
+        val spectral = if (fftCaptureAvailable && fftBytes != null) {
+            FftAnalyzer.analyze(fftBytes)
+        } else {
+            EMPTY_SPECTRAL
+        }
         updateDisplayBins(spectral.displayBins36)
 
         if (bypassed) {
@@ -105,8 +110,15 @@ class AdaptiveEqEngine {
         val maxScaledDelta = MAX_ADAPTIVE_DELTA_DB * intensityScale
         val (attackAlpha, releaseAlpha) = smoothingRatesFor(speed)
 
-        val hasActiveSignal = fftBytes != null && spectral.broadbandRms >= SILENT_RMS_THRESHOLD
-        val engineStatus = updateWatchdogState(hasActiveSignal, isMediaPlaying, nowMs)
+        val hasActiveSignal = fftCaptureAvailable &&
+            fftBytes != null &&
+            spectral.broadbandRms >= SILENT_RMS_THRESHOLD
+        val engineStatus = updateWatchdogState(
+            fftCaptureAvailable = fftCaptureAvailable,
+            hasActiveSignal = hasActiveSignal,
+            isMediaPlaying = isMediaPlaying,
+            nowMs = nowMs,
+        )
 
         updateAdaptiveDelta(
             hasActiveSignal = hasActiveSignal,
@@ -177,10 +189,17 @@ class AdaptiveEqEngine {
     }
 
     private fun updateWatchdogState(
+        fftCaptureAvailable: Boolean,
         hasActiveSignal: Boolean,
         isMediaPlaying: Boolean,
         nowMs: Long,
     ): EngineStatus {
+        if (!fftCaptureAvailable) {
+            silentSinceMs = null
+            inProfileFallback = true
+            return EngineStatus.PROFILE_FALLBACK
+        }
+
         if (hasActiveSignal) {
             silentSinceMs = null
             inProfileFallback = false

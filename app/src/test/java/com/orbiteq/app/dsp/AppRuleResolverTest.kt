@@ -265,4 +265,34 @@ class AppRuleResolverTest {
             Locale.setDefault(originalLocale)
         }
     }
+
+    @Test
+    fun speakerKeyIsLocaleInvariantAndUnknownOutputResolvesSymmetrically() {
+        assertEquals("builtin_speaker", AppRuleResolver.deviceKey("Phone Speaker", isSpeaker = true))
+        assertEquals("builtin_speaker", AppRuleResolver.deviceKey("Telefon Hoparlörü", isSpeaker = true))
+        assertEquals("builtin_speaker", AppRuleResolver.deviceKey("", isSpeaker = true))
+        assertEquals("unknown_output", AppRuleResolver.deviceKey("  ", isSpeaker = false))
+        assertEquals("unknown_output", AppRuleResolver.deviceKey(null, isSpeaker = false))
+
+        val savedSpeakerKey = AppRuleResolver.deviceKey("Phone Speaker", isSpeaker = true)
+        val savedProfiles = mapOf(savedSpeakerKey to HeadphoneProfile.FLAT_GENERIC)
+        assertEquals(
+            HeadphoneProfile.FLAT_GENERIC,
+            AppRuleResolver.resolveHeadphoneProfile(
+                deviceName = "Telefon Hoparlörü",
+                isSpeaker = true,
+                savedDeviceProfiles = savedProfiles,
+            ),
+        )
+
+        val unknownKey = AppRuleResolver.deviceKey(null, isSpeaker = false)
+        assertEquals(
+            HeadphoneProfile.Q30_SAFE_STACK,
+            AppRuleResolver.resolveHeadphoneProfile(
+                deviceName = "",
+                isSpeaker = false,
+                savedDeviceProfiles = mapOf(unknownKey to HeadphoneProfile.Q30_SAFE_STACK),
+            ),
+        )
+    }
 }

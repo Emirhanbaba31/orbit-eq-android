@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -49,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -59,17 +62,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.orbiteq.app.R
 import com.orbiteq.app.dsp.PleasureProfiles
+import com.orbiteq.app.model.EngineStatus
 import com.orbiteq.app.model.ModeResolutionSource
 import com.orbiteq.app.model.OrbitThemeMode
 import com.orbiteq.app.model.OrbitUiState
 import com.orbiteq.app.model.PleasureMode
+import com.orbiteq.app.ui.LocalReducedMotion
 import com.orbiteq.app.ui.OrbitGlassCard
 import com.orbiteq.app.ui.OrbitStatusChip
 import com.orbiteq.app.ui.SectionLabelText
 import com.orbiteq.app.ui.components.HeroSpectrumCanvas
 import com.orbiteq.app.ui.components.ModeMiniCurveIcon
 import com.orbiteq.app.ui.components.OrbitalDial
-import com.orbiteq.app.ui.components.rememberReducedMotionEnabled
 import com.orbiteq.app.ui.formatSignedDbWithUnit
 import com.orbiteq.app.ui.icons.OrbitIcons
 import com.orbiteq.app.ui.modeDisplayName
@@ -100,7 +104,8 @@ fun StudioScreen(
 ) {
     val colors = LocalOrbitColors.current
     val haptic = LocalHapticFeedback.current
-    val reducedMotion = rememberReducedMotionEnabled()
+    val layoutDirection = LocalLayoutDirection.current
+    val reducedMotion = LocalReducedMotion.current
     val effectiveBypass = uiState.settings.bypassed || uiState.autoBypassedByRule
 
     val targetCurveDb = remember(uiState.activeMode, uiState.settings.intensityPercent) {
@@ -113,8 +118,8 @@ fun StudioScreen(
             .fillMaxSize()
             .widthIn(max = 720.dp),
         contentPadding = PaddingValues(
-            start = 16.dp,
-            end = 16.dp,
+            start = contentPadding.calculateStartPadding(layoutDirection) + 16.dp,
+            end = contentPadding.calculateEndPadding(layoutDirection) + 16.dp,
             top = contentPadding.calculateTopPadding(),
             bottom = contentPadding.calculateBottomPadding(),
         ),
@@ -182,12 +187,17 @@ fun StudioScreen(
         }
 
         item(key = "hero_spectrum_canvas") {
+            val displayEngineStatus = if (effectiveBypass) {
+                EngineStatus.BYPASSED
+            } else {
+                uiState.telemetry.engineStatus
+            }
             HeroSpectrumCanvas(
                 spectrumBins36 = uiState.telemetry.spectrumBins36,
                 targetCurveDb = targetCurveDb,
                 liveCurveDb = uiState.telemetry.liveEqCurveDb,
                 manualTrimsDb = uiState.settings.manualTrimsDb,
-                engineStatus = uiState.telemetry.engineStatus,
+                engineStatus = displayEngineStatus,
                 activeMode = uiState.activeMode,
                 preampAttenuationDb = uiState.telemetry.preampAttenuationDb,
                 loudnessBoostDb = uiState.telemetry.loudnessBoostDb,
@@ -347,13 +357,29 @@ private fun NowPlayingTelemetryPill(
                 }
             }
 
-            val abDesc = stringResource(R.string.ab_bypass_cd)
+            val isAutoBypassed = uiState.autoBypassedByRule
             val isManualBypass = uiState.settings.bypassed
+            val abDesc = if (isAutoBypassed) {
+                stringResource(R.string.ab_bypass_auto_cd)
+            } else {
+                stringResource(R.string.ab_bypass_cd)
+            }
+            val abLabel = if (isAutoBypassed) {
+                stringResource(R.string.ab_bypass_auto_label)
+            } else {
+                stringResource(R.string.ab_bypass_label)
+            }
             val abContainerColor = when {
-                effectiveBypass -> colors.danger.copy(alpha = 0.22f)
+                isAutoBypassed -> colors.surface
+                isManualBypass -> colors.danger.copy(alpha = 0.22f)
                 else -> colors.surface
             }
-            val abBorderColor = if (effectiveBypass) colors.danger else colors.borderHairline
+            val abBorderColor = when {
+                isAutoBypassed -> colors.danger.copy(alpha = 0.55f)
+                isManualBypass -> colors.danger
+                else -> colors.borderHairline
+            }
+            val abTextColor = if (isAutoBypassed) colors.textSecondary else colors.textPrimary
 
             Box(
                 modifier = Modifier
@@ -366,7 +392,8 @@ private fun NowPlayingTelemetryPill(
                         shape = RoundedCornerShape(14.dp),
                     )
                     .toggleable(
-                        value = isManualBypass,
+                        value = effectiveBypass,
+                        enabled = !isAutoBypassed,
                         role = Role.Switch,
                         onValueChange = { onToggleBypass() },
                     )
@@ -377,11 +404,11 @@ private fun NowPlayingTelemetryPill(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = stringResource(R.string.ab_bypass_label),
+                    text = abLabel,
                     style = SpaceMonoTabularStyle.copy(
-                        fontSize = 12.sp,
+                        fontSize = if (isAutoBypassed) 11.sp else 12.sp,
                         fontWeight = FontWeight.Bold,
-                        color = colors.textPrimary,
+                        color = abTextColor,
                     ),
                     maxLines = 1,
                 )
@@ -613,7 +640,7 @@ private fun TactileTelemetryDeck(
     onDynamicLoudnessChange: (Boolean) -> Unit,
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val sideBySide = maxWidth >= 460.dp
+        val sideBySide = maxWidth >= 520.dp
         if (sideBySide) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -740,7 +767,7 @@ private fun MacroControlsCard(
                         fontWeight = FontWeight.SemiBold,
                         color = colors.textPrimary,
                     ),
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
@@ -748,7 +775,7 @@ private fun MacroControlsCard(
                     style = MaterialTheme.typography.bodySmall.copy(
                         color = colors.textSecondary,
                     ),
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

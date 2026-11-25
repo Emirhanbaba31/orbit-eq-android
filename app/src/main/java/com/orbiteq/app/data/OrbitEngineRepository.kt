@@ -294,7 +294,11 @@ object OrbitEngineRepository {
                     trackTitle = info.trackTitle.trim(),
                     artist = info.artist.trim(),
                     modeUsed = nextState.activeMode,
-                    spectralTag = nextState.telemetry.dominantSpectralTag.ifBlank { "Balanced" },
+                    spectralTag = if (trackChanged) {
+                        "Balanced"
+                    } else {
+                        nextState.telemetry.dominantSpectralTag.ifBlank { "Balanced" }
+                    },
                     timestampMs = System.currentTimeMillis(),
                 )
                 val updatedHistory = HistoryCodec.appendHistory(nextState.recentActivity, entry)
@@ -379,7 +383,8 @@ object OrbitEngineRepository {
 
             if (!hasActiveAppRule) {
                 val deviceKey = currentDeviceKey(prev.connectedDevice)
-                val updatedDeviceDefaults = prev.settings.deviceDefaultModes + (deviceKey to mode)
+                val updatedDeviceDefaults = removeNormalizedKey(prev.settings.deviceDefaultModes, deviceKey) +
+                    (deviceKey to mode)
                 val updatedSettings = prev.settings.copy(
                     selectedMode = mode,
                     deviceDefaultModes = updatedDeviceDefaults,
@@ -393,7 +398,8 @@ object OrbitEngineRepository {
                 enqueueSettingsTransformLocked { current ->
                     current.copy(
                         selectedMode = mode,
-                        deviceDefaultModes = current.deviceDefaultModes + (deviceKey to mode),
+                        deviceDefaultModes = removeNormalizedKey(current.deviceDefaultModes, deviceKey) +
+                            (deviceKey to mode),
                     )
                 }
             } else {

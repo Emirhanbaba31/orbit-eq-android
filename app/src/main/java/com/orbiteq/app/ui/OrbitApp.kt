@@ -1,5 +1,10 @@
 package com.orbiteq.app.ui
 
+import android.content.Context
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -9,9 +14,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,7 +26,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.union
@@ -35,17 +44,23 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -76,6 +91,8 @@ enum class OrbitTab {
     ACTIVITY,
 }
 
+internal val LocalReducedMotion = staticCompositionLocalOf { false }
+
 @Composable
 fun OrbitApp(
     viewModel: OrbitViewModel,
@@ -88,78 +105,81 @@ fun OrbitApp(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val permissionState by viewModel.permissionState.collectAsStateWithLifecycle()
     var activeTab by rememberSaveable { mutableStateOf(OrbitTab.STUDIO) }
+    val reducedMotion = rememberReducedMotionEnabled()
 
-    OrbitTheme(themeMode = uiState.settings.themeMode) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            CosmicBackdrop(
-                activeMode = uiState.activeMode,
-                powerEnabled = uiState.settings.powerEnabled,
-                themeMode = uiState.settings.themeMode,
-                modifier = Modifier.fillMaxSize(),
-            )
-
-            Scaffold(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .imePadding(),
-                containerColor = Color.Transparent,
-                contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                bottomBar = {
-                    OrbitBottomNavBar(
-                        activeTab = activeTab,
-                        onSelectTab = { activeTab = it },
-                    )
-                },
-            ) { innerPadding ->
-                val screenContentPadding = rememberOrbitContentPadding(
-                    bottomBarPadding = innerPadding.calculateBottomPadding(),
-                )
-                Box(
+    CompositionLocalProvider(LocalReducedMotion provides reducedMotion) {
+        OrbitTheme(themeMode = uiState.settings.themeMode) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                CosmicBackdrop(
+                    activeMode = uiState.activeMode,
+                    powerEnabled = uiState.settings.powerEnabled,
+                    themeMode = uiState.settings.themeMode,
                     modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.TopCenter,
-                ) {
-                    when (activeTab) {
-                        OrbitTab.STUDIO -> StudioScreen(
-                            uiState = uiState,
-                            contentPadding = screenContentPadding,
-                            onTogglePower = onTogglePower,
-                            onToggleBypass = { viewModel.setBypassed(!uiState.settings.bypassed) },
-                            onSelectMode = viewModel::selectMode,
-                            onSaveForActiveApp = viewModel::saveCurrentModeForActiveApp,
-                            onIntensityChange = viewModel::setIntensityPercent,
-                            onBassMacroChange = viewModel::setBassMacroDb,
-                            onAirMacroChange = viewModel::setAirMacroDb,
-                            onDynamicLoudnessChange = viewModel::setDynamicLoudness,
-                        )
+                )
 
-                        OrbitTab.MIXER -> MixerScreen(
-                            uiState = uiState,
-                            contentPadding = screenContentPadding,
-                            onBandTrimChange = viewModel::setBandTrim,
-                            onResetTrims = viewModel::resetManualTrims,
-                            onMbcEnabledChange = viewModel::setMbcEnabled,
-                            onResponseSpeedChange = viewModel::setResponseSpeed,
-                            onSavePreset = viewModel::saveCustomPreset,
-                            onApplyPreset = viewModel::applyCustomPreset,
-                            onDeletePreset = viewModel::deleteCustomPreset,
+                Scaffold(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .imePadding(),
+                    containerColor = Color.Transparent,
+                    contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                    bottomBar = {
+                        OrbitBottomNavBar(
+                            activeTab = activeTab,
+                            onSelectTab = { activeTab = it },
                         )
+                    },
+                ) { innerPadding ->
+                    val screenContentPadding = rememberOrbitContentPadding(
+                        bottomBarPadding = innerPadding.calculateBottomPadding(),
+                    )
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.TopCenter,
+                    ) {
+                        when (activeTab) {
+                            OrbitTab.STUDIO -> StudioScreen(
+                                uiState = uiState,
+                                contentPadding = screenContentPadding,
+                                onTogglePower = onTogglePower,
+                                onToggleBypass = { viewModel.setBypassed(!uiState.settings.bypassed) },
+                                onSelectMode = viewModel::selectMode,
+                                onSaveForActiveApp = viewModel::saveCurrentModeForActiveApp,
+                                onIntensityChange = viewModel::setIntensityPercent,
+                                onBassMacroChange = viewModel::setBassMacroDb,
+                                onAirMacroChange = viewModel::setAirMacroDb,
+                                onDynamicLoudnessChange = viewModel::setDynamicLoudness,
+                            )
 
-                        OrbitTab.ACTIVITY -> ActivityScreen(
-                            uiState = uiState,
-                            permissionState = permissionState,
-                            contentPadding = screenContentPadding,
-                            onHeadphoneProfileChange = viewModel::setHeadphoneProfile,
-                            onDismissQ30Tip = viewModel::dismissQ30Tip,
-                            onSessionModeChange = viewModel::setSessionMode,
-                            onSetAppRule = viewModel::setAppRule,
-                            onRemoveAppRule = viewModel::removeAppRule,
-                            onTogglePinTrack = viewModel::togglePinTrack,
-                            onThemeModeChange = viewModel::setThemeMode,
-                            onRequestRecordAudio = onRequestRecordAudio,
-                            onOpenNotificationListenerSettings = onOpenNotificationListenerSettings,
-                            onRequestPostNotifications = onRequestPostNotifications,
-                            onRequestBatteryOptimizationExemption = onRequestBatteryOptimizationExemption,
-                        )
+                            OrbitTab.MIXER -> MixerScreen(
+                                uiState = uiState,
+                                contentPadding = screenContentPadding,
+                                onBandTrimChange = viewModel::setBandTrim,
+                                onResetTrims = viewModel::resetManualTrims,
+                                onMbcEnabledChange = viewModel::setMbcEnabled,
+                                onResponseSpeedChange = viewModel::setResponseSpeed,
+                                onSavePreset = viewModel::saveCustomPreset,
+                                onApplyPreset = viewModel::applyCustomPreset,
+                                onDeletePreset = viewModel::deleteCustomPreset,
+                            )
+
+                            OrbitTab.ACTIVITY -> ActivityScreen(
+                                uiState = uiState,
+                                permissionState = permissionState,
+                                contentPadding = screenContentPadding,
+                                onHeadphoneProfileChange = viewModel::setHeadphoneProfile,
+                                onDismissQ30Tip = viewModel::dismissQ30Tip,
+                                onSessionModeChange = viewModel::setSessionMode,
+                                onSetAppRule = viewModel::setAppRule,
+                                onRemoveAppRule = viewModel::removeAppRule,
+                                onTogglePinTrack = viewModel::togglePinTrack,
+                                onThemeModeChange = viewModel::setThemeMode,
+                                onRequestRecordAudio = onRequestRecordAudio,
+                                onOpenNotificationListenerSettings = onOpenNotificationListenerSettings,
+                                onRequestPostNotifications = onRequestPostNotifications,
+                                onRequestBatteryOptimizationExemption = onRequestBatteryOptimizationExemption,
+                            )
+                        }
                     }
                 }
             }
@@ -189,7 +209,11 @@ private fun OrbitBottomNavBar(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .windowInsetsPadding(
+                        WindowInsets.navigationBars.union(
+                            WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal),
+                        ),
+                    )
                     .padding(horizontal = 12.dp, vertical = 6.dp)
                     .selectableGroup(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -263,11 +287,62 @@ private fun OrbitBottomNavBar(
 
 @Composable
 private fun rememberOrbitContentPadding(bottomBarPadding: Dp): PaddingValues {
+    val layoutDirection = LocalLayoutDirection.current
     val topInsets = WindowInsets.statusBars.union(WindowInsets.displayCutout).asPaddingValues()
+    val horizontalInsets = WindowInsets.safeDrawing
+        .only(WindowInsetsSides.Horizontal)
+        .asPaddingValues()
     return PaddingValues(
+        start = horizontalInsets.calculateStartPadding(layoutDirection),
+        end = horizontalInsets.calculateEndPadding(layoutDirection),
         top = topInsets.calculateTopPadding() + 12.dp,
         bottom = bottomBarPadding + 20.dp,
     )
+}
+
+@Composable
+private fun rememberReducedMotionEnabled(): Boolean {
+    val context = LocalContext.current
+    var reduced by remember(context) {
+        mutableStateOf(readAnimatorScaleZero(context))
+    }
+
+    DisposableEffect(context) {
+        val resolver = context.contentResolver
+        val uri = Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE)
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                reduced = readAnimatorScaleZero(context)
+            }
+        }
+        try {
+            resolver.registerContentObserver(uri, false, observer)
+        } catch (_: SecurityException) {
+            // Keep initial read value if global settings observer is restricted.
+        }
+        onDispose {
+            try {
+                resolver.unregisterContentObserver(observer)
+            } catch (_: IllegalStateException) {
+                // Ignore if already unregistered.
+            }
+        }
+    }
+
+    return reduced
+}
+
+private fun readAnimatorScaleZero(context: Context): Boolean {
+    return try {
+        val scale = Settings.Global.getFloat(
+            context.contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE,
+            1.0f,
+        )
+        scale <= 0f
+    } catch (_: SecurityException) {
+        false
+    }
 }
 
 @Composable

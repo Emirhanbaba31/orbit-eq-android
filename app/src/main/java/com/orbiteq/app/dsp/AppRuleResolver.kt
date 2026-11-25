@@ -72,11 +72,12 @@ object AppRuleResolver {
     }
 
     fun deviceKey(deviceName: String?, isSpeaker: Boolean): String {
+        if (isSpeaker) return BUILTIN_SPEAKER_KEY
         val trimmed = deviceName?.trim()
         if (!trimmed.isNullOrEmpty()) {
             return trimmed.lowercase(Locale.ROOT)
         }
-        return if (isSpeaker) BUILTIN_SPEAKER_KEY else UNKNOWN_OUTPUT_KEY
+        return UNKNOWN_OUTPUT_KEY
     }
 
     fun resolvePleasureMode(
@@ -142,19 +143,10 @@ object AppRuleResolver {
         isSpeaker: Boolean,
         savedDeviceProfiles: Map<String, HeadphoneProfile>,
     ): HeadphoneProfile {
-        val trimmedName = deviceName?.trim()
-        if (!trimmedName.isNullOrEmpty()) {
-            val savedByName = findNormalized(savedDeviceProfiles, trimmedName.lowercase(Locale.ROOT))
-            if (savedByName != null) {
-                return savedByName
-            }
-        } else if (isSpeaker) {
-            val savedSpeaker = findNormalized(savedDeviceProfiles, BUILTIN_SPEAKER_KEY)
-            if (savedSpeaker != null) {
-                return savedSpeaker
-            }
-        }
+        val key = deviceKey(deviceName, isSpeaker)
+        findNormalized(savedDeviceProfiles, key)?.let { return it }
 
+        val trimmedName = deviceName?.trim()
         if (!isSpeaker && PleasureProfiles.detectSoundcoreQ30(trimmedName)) {
             return HeadphoneProfile.Q30_CLEAN_BASE
         }

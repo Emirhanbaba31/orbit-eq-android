@@ -212,8 +212,8 @@ object HistoryCodec {
             if (index >= array.length() || array.isNull(index)) {
                 0f
             } else {
-                val raw = array.optDouble(index, Double.NaN)
-                if (raw.isFinite()) raw.toFloat() else 0f
+                val raw = array.optDouble(index, Double.NaN).toFloat()
+                if (raw.isFinite()) raw else 0f
             }
         }
     }
@@ -260,7 +260,7 @@ object HistoryCodec {
 
     private fun JSONObject.safeFloat(key: String, default: Float = 0f): Float {
         if (isNull(key)) return default
-        val raw = optDouble(key, default.toDouble())
-        return if (raw.isFinite()) raw.toFloat() else default
+        val raw = optDouble(key, default.toDouble()).toFloat()
+        return if (raw.isFinite()) raw else default
     }
 }

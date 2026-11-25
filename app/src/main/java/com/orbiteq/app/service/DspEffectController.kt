@@ -92,6 +92,10 @@ object AndroidDspBackendFactory : DspBackendFactory {
     private const val EQ_BAND_COUNT = 10
     private const val MBC_BAND_COUNT = 4
 
+    // Upper band edges centered geometrically around ISO_FREQUENCIES_HZ (31..16000 Hz)
+    private val EQ_UPPER_CUTOFFS_HZ = floatArrayOf(
+        44f, 88f, 177f, 355f, 707f, 1414f, 2828f, 5657f, 11314f, 20000f,
+    )
     private val MBC_CUTOFFS_HZ = floatArrayOf(180f, 800f, 4000f, 20000f)
     private val MBC_RATIOS = floatArrayOf(1.8f, 1.5f, 1.5f, 1.8f)
     private val MBC_ATTACKS_MS = floatArrayOf(25f, 18f, 14f, 12f)
@@ -218,7 +222,7 @@ object AndroidDspBackendFactory : DspBackendFactory {
                 i,
                 DynamicsProcessing.EqBand(
                     /* enabled = */ true,
-                    /* cutoffFrequency = */ PleasureProfiles.ISO_FREQUENCIES_HZ[i].toFloat(),
+                    /* cutoffFrequency = */ EQ_UPPER_CUTOFFS_HZ[i],
                     /* gain = */ 0f,
                 ),
             )
@@ -260,10 +264,10 @@ object AndroidDspBackendFactory : DspBackendFactory {
         override val backend: DspBackend = DspBackend.DYNAMICS_PROCESSING
 
         private val preBands = Array(EQ_BAND_COUNT) { i ->
-            DynamicsProcessing.EqBand(true, PleasureProfiles.ISO_FREQUENCIES_HZ[i].toFloat(), 0f)
+            DynamicsProcessing.EqBand(true, EQ_UPPER_CUTOFFS_HZ[i], 0f)
         }
         private val postBands = Array(EQ_BAND_COUNT) { i ->
-            DynamicsProcessing.EqBand(true, PleasureProfiles.ISO_FREQUENCIES_HZ[i].toFloat(), 0f)
+            DynamicsProcessing.EqBand(true, EQ_UPPER_CUTOFFS_HZ[i], 0f)
         }
         private var lastEnabled: Boolean? = null
         private var lastMbcEnabled: Boolean? = null
@@ -272,8 +276,7 @@ object AndroidDspBackendFactory : DspBackendFactory {
         override fun apply(frame: EqEngineFrame, mbcEnabled: Boolean, active: Boolean) {
             if (!active) {
                 if (lastEnabled != false) {
-                    dp.enabled = false
-                    lastEnabled = false
+                    setDpEnabled(false)
                 }
                 return
             }
@@ -300,9 +303,16 @@ object AndroidDspBackendFactory : DspBackendFactory {
             }
 
             if (lastEnabled != true) {
-                dp.enabled = true
-                lastEnabled = true
+                setDpEnabled(true)
             }
+        }
+
+        private fun setDpEnabled(enabled: Boolean) {
+            val status = dp.setEnabled(enabled)
+            if (status != AudioEffect.SUCCESS) {
+                throw IllegalStateException("DynamicsProcessing setEnabled($enabled) failed: $status")
+            }
+            lastEnabled = enabled
         }
 
         override fun release() {

@@ -56,6 +56,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.orbiteq.app.R
+import com.orbiteq.app.ui.LocalReducedMotion
 import com.orbiteq.app.ui.theme.DmSansFamily
 import com.orbiteq.app.ui.theme.LocalOrbitColors
 import com.orbiteq.app.ui.theme.SpaceMonoTabularStyle
@@ -80,7 +81,7 @@ fun OrbitalDial(
 ) {
     val colors = LocalOrbitColors.current
     val haptic = LocalHapticFeedback.current
-    val reducedMotion = rememberReducedMotionEnabled()
+    val reducedMotion = LocalReducedMotion.current
 
     val clampedPercent = intensityPercent.coerceIn(0, 100)
     var isDragging by remember { mutableStateOf(false) }
@@ -137,45 +138,48 @@ fun OrbitalDial(
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val cx = size.width / 2f
                         val cy = size.height / 2f
+                        val minRingRadius = size.width * 0.20f
+                        val downRadius = hypot(down.position.x - cx, down.position.y - cy)
+                        // Ignore touches inside the center readout dead-zone so parent scroll stays smooth.
+                        if (downRadius < minRingRadius) return@awaitEachGesture
+
                         val touchSlop = viewConfiguration.touchSlop
                         var dragStarted = false
                         var trackedPercent = currentPercent
                         var lastDetent = trackedPercent / DIAL_STEP_PERCENT
 
-                        drag(down.id) { change ->
-                            val distFromDown = hypot(
-                                change.position.x - down.position.x,
-                                change.position.y - down.position.y,
-                            )
-                            if (!dragStarted && distFromDown > touchSlop) {
-                                dragStarted = true
-                                isDragging = true
-                            }
-                            if (dragStarted && currentEnabled) {
-                                change.consume()
-                                val mapped = pointToPercent(
-                                    point = change.position,
-                                    centerX = cx,
-                                    centerY = cy,
-                                    previousPercent = trackedPercent,
+                        try {
+                            val completed = drag(down.id) { change ->
+                                val distFromDown = hypot(
+                                    change.position.x - down.position.x,
+                                    change.position.y - down.position.y,
                                 )
-                                if (mapped != null && mapped != trackedPercent) {
-                                    trackedPercent = mapped
-                                    currentOnChange(mapped)
-                                    val detent = mapped / DIAL_STEP_PERCENT
-                                    if (detent != lastDetent) {
-                                        lastDetent = detent
-                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                if (!dragStarted && distFromDown > touchSlop) {
+                                    dragStarted = true
+                                    isDragging = true
+                                }
+                                if (dragStarted && currentEnabled) {
+                                    change.consume()
+                                    val mapped = pointToPercent(
+                                        point = change.position,
+                                        centerX = cx,
+                                        centerY = cy,
+                                        previousPercent = trackedPercent,
+                                    )
+                                    if (mapped != null && mapped != trackedPercent) {
+                                        trackedPercent = mapped
+                                        currentOnChange(mapped)
+                                        val detent = mapped / DIAL_STEP_PERCENT
+                                        if (detent != lastDetent) {
+                                            lastDetent = detent
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        if (!dragStarted && currentEnabled) {
-                            // Single tap along the arc steps to nearest 5% detent
-                            val tapRadius = hypot(down.position.x - cx, down.position.y - cy)
-                            val minRingRadius = size.width * 0.20f
-                            if (tapRadius >= minRingRadius) {
+                            if (completed && !dragStarted && currentEnabled) {
+                                // Single tap along the arc steps to nearest 5% detent
                                 val mapped = pointToTapPercent(
                                     point = down.position,
                                     centerX = cx,
@@ -190,8 +194,9 @@ fun OrbitalDial(
                                     }
                                 }
                             }
+                        } finally {
+                            isDragging = false
                         }
-                        isDragging = false
                     }
                 },
             contentAlignment = Alignment.Center,

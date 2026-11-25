@@ -41,10 +41,15 @@ internal object AudioSessionRegistry {
         synchronized(lock) {
             if (openSessions.isEmpty()) return null
             if (normalizedPreferred != null) {
-                val matching = openSessions.entries.lastOrNull { (_, pkg) -> pkg == normalizedPreferred }
-                if (matching != null) return matching.key
+                return openSessions.entries.lastOrNull { (_, pkg) -> pkg == normalizedPreferred }?.key
             }
             return openSessions.keys.lastOrNull()
+        }
+    }
+
+    internal fun resetForTesting() {
+        synchronized(lock) {
+            openSessions.clear()
         }
     }
 }

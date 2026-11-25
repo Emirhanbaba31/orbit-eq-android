@@ -439,6 +439,91 @@ class AdaptiveEqEngineTest {
     }
 
     @Test
+    fun unavailableFftCaptureImmediatelyEntersProfileFallbackAndDecaysAdaptiveDelta() {
+        val engine = AdaptiveEqEngine()
+        val muddyFft = syntheticFftForFrequencyRange(minHz = 125f, maxHz = 250f, re = 100, im = 20)
+
+        // First establish non-zero adaptive deltas under Tier 1 live FFT.
+        lateinit var lockedFrame: EqEngineFrame
+        repeat(8) { step ->
+            lockedFrame = engine.processFrame(
+                fftBytes = muddyFft,
+                nowMs = 1000L + step * 50L,
+                isMediaPlaying = true,
+                powerEnabled = true,
+                bypassed = false,
+                mode = PleasureMode.GRAVITY,
+                intensityPercent = 100,
+                speed = ResponseSpeed.BALANCED,
+                bassMacroDb = 2.0f,
+                airMacroDb = 1.5f,
+                dynamicLoudness = true,
+                volumeRatio = 0.25f,
+                headphoneProfile = HeadphoneProfile.Q30_CLEAN_BASE,
+                manualTrimsDb = List(10) { 0f },
+                fftCaptureAvailable = true,
+            )
+        }
+        assertEquals(EngineStatus.AUTO_FFT_LOCKED, lockedFrame.engineStatus)
+        val initialMudDelta = lockedFrame.adaptiveDeltaDb[2]
+        assertTrue("Expected negative delta before Tier 2 drop", initialMudDelta < -0.5f)
+
+        // Even with isMediaPlaying = false and dt = 10 ms (< 1500 ms), fftCaptureAvailable = false must
+        // immediately report PROFILE_FALLBACK and decay adaptive deltas toward 0.
+        val tier2Immediate = engine.processFrame(
+            fftBytes = null,
+            nowMs = 1410L,
+            isMediaPlaying = false,
+            powerEnabled = true,
+            bypassed = false,
+            mode = PleasureMode.GRAVITY,
+            intensityPercent = 100,
+            speed = ResponseSpeed.BALANCED,
+            bassMacroDb = 2.0f,
+            airMacroDb = 1.5f,
+            dynamicLoudness = true,
+            volumeRatio = 0.25f,
+            headphoneProfile = HeadphoneProfile.Q30_CLEAN_BASE,
+            manualTrimsDb = List(10) { 0f },
+            fftCaptureAvailable = false,
+        )
+        assertEquals(EngineStatus.PROFILE_FALLBACK, tier2Immediate.engineStatus)
+        assertTrue(
+            "Adaptive delta should begin decaying immediately: ${tier2Immediate.adaptiveDeltaDb[2]} vs $initialMudDelta",
+            abs(tier2Immediate.adaptiveDeltaDb[2]) < abs(initialMudDelta),
+        )
+        assertArrayEquals(
+            PleasureProfiles.compensationCurveFor(HeadphoneProfile.Q30_CLEAN_BASE),
+            tier2Immediate.preEqDb,
+            0.0001f,
+        )
+        assertTrue("Dynamic loudness remains active in Tier 2", tier2Immediate.loudnessBoostDb > 0f)
+        assertTrue("Pleasure mode + macros remain active in Tier 2", tier2Immediate.postEqDb[0] > 5.0f)
+
+        // Fresh engine starting in Tier 2 (fftCaptureAvailable = false) also starts directly in PROFILE_FALLBACK.
+        val freshTier2Engine = AdaptiveEqEngine()
+        val freshFrame = freshTier2Engine.processFrame(
+            fftBytes = muddyFft,
+            nowMs = 0L,
+            isMediaPlaying = true,
+            powerEnabled = true,
+            bypassed = false,
+            mode = PleasureMode.NOVA,
+            intensityPercent = 80,
+            speed = ResponseSpeed.BALANCED,
+            bassMacroDb = 1.0f,
+            airMacroDb = 1.0f,
+            dynamicLoudness = false,
+            volumeRatio = 0.8f,
+            headphoneProfile = HeadphoneProfile.FLAT_GENERIC,
+            manualTrimsDb = List(10) { 0f },
+            fftCaptureAvailable = false,
+        )
+        assertEquals(EngineStatus.PROFILE_FALLBACK, freshFrame.engineStatus)
+        assertArrayEquals(FloatArray(10), freshFrame.adaptiveDeltaDb, 0.0001f)
+    }
+
+    @Test
     fun bypassAndPowerOffBehaviorsRespectTelemetryContracts() {
         val engine = AdaptiveEqEngine()
         val activeFft = syntheticFftForFrequencyRange(minHz = 400f, maxHz = 1600f, re = 80, im = 40)

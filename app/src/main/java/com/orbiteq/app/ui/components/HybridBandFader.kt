@@ -47,6 +47,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.orbiteq.app.ui.LocalReducedMotion
 import com.orbiteq.app.ui.theme.LocalOrbitColors
 import com.orbiteq.app.ui.theme.SpaceMonoTabularStyle
 import java.util.Locale
@@ -78,7 +79,7 @@ fun HybridBandFader(
 ) {
     val colors = LocalOrbitColors.current
     val haptic = LocalHapticFeedback.current
-    val reducedMotion = rememberReducedMotionEnabled()
+    val reducedMotion = LocalReducedMotion.current
 
     val safeLiveDb = if (liveTotalDb.isFinite()) {
         liveTotalDb.coerceIn(-FADER_LIVE_RANGE_DB, FADER_LIVE_RANGE_DB)
@@ -188,38 +189,41 @@ fun HybridBandFader(
                         } ?: return@awaitEachGesture
 
                         isDragging = true
-                        val padV = 12.dp.toPx()
-                        val usableHeight = (size.height - padV * 2f).coerceAtLeast(1f)
+                        try {
+                            val padV = 12.dp.toPx()
+                            val usableHeight = (size.height - padV * 2f).coerceAtLeast(1f)
 
-                        fun applyDelta(deltaY: Float) {
-                            if (!currentEnabled || abs(deltaY) <= 0f) return
-                            val step = stepFaderDrag(
-                                currentRawDb = rawDb,
-                                lastReportedDb = lastReportedDb,
-                                wasSnappedZero = wasSnappedZero,
-                                deltaYPx = deltaY,
-                                usableTrackHeightPx = usableHeight,
-                            )
-                            rawDb = step.nextRawDb
-                            if (step.changed) {
-                                if (step.crossedIntoZeroDetent) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            fun applyDelta(deltaY: Float) {
+                                if (!currentEnabled || abs(deltaY) <= 0f) return
+                                val step = stepFaderDrag(
+                                    currentRawDb = rawDb,
+                                    lastReportedDb = lastReportedDb,
+                                    wasSnappedZero = wasSnappedZero,
+                                    deltaYPx = deltaY,
+                                    usableTrackHeightPx = usableHeight,
+                                )
+                                rawDb = step.nextRawDb
+                                if (step.changed) {
+                                    if (step.crossedIntoZeroDetent) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    }
+                                    wasSnappedZero = step.nowAtZero
+                                    lastReportedDb = step.nextSnappedDb
+                                    currentOnTrimChange(step.nextSnappedDb)
                                 }
-                                wasSnappedZero = step.nowAtZero
-                                lastReportedDb = step.nextSnappedDb
-                                currentOnTrimChange(step.nextSnappedDb)
                             }
-                        }
 
-                        applyDelta(initialDeltaY)
+                            applyDelta(initialDeltaY)
 
-                        verticalDrag(slopChange.id) { change ->
-                            // Read positionChange BEFORE consuming so Compose does not zero the delta.
-                            val dy = change.positionChange().y
-                            change.consume()
-                            applyDelta(dy)
+                            verticalDrag(slopChange.id) { change ->
+                                // Read positionChange BEFORE consuming so Compose does not zero the delta.
+                                val dy = change.positionChange().y
+                                change.consume()
+                                applyDelta(dy)
+                            }
+                        } finally {
+                            isDragging = false
                         }
-                        isDragging = false
                     }
                 },
             contentAlignment = Alignment.Center,
