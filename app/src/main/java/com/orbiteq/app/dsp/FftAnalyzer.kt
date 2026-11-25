@@ -1,8 +1,10 @@
 package com.orbiteq.app.dsp
 
 import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.hypot
+import kotlin.math.ln
 import kotlin.math.log2
 import kotlin.math.pow
 import kotlin.math.sqrt
@@ -12,6 +14,7 @@ data class SpectralFrame(
     val displayBins36: FloatArray,
     val broadbandRms: Float,
     val spectralTag: String,
+    val spectralFlatness: Float = 0f,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -19,7 +22,8 @@ data class SpectralFrame(
         return bandEnergiesNorm.contentEquals(other.bandEnergiesNorm) &&
             displayBins36.contentEquals(other.displayBins36) &&
             broadbandRms == other.broadbandRms &&
-            spectralTag == other.spectralTag
+            spectralTag == other.spectralTag &&
+            spectralFlatness == other.spectralFlatness
     }
 
     override fun hashCode(): Int {
@@ -27,6 +31,7 @@ data class SpectralFrame(
         result = 31 * result + displayBins36.contentHashCode()
         result = 31 * result + broadbandRms.hashCode()
         result = 31 * result + spectralTag.hashCode()
+        result = 31 * result + spectralFlatness.hashCode()
         return result
     }
 }
@@ -39,6 +44,7 @@ object FftAnalyzer {
     private const val PINK_BAND_NORM_GAIN = 1.58f
     private const val DISPLAY_BIN_NORM_GAIN = 2.8f
     private const val BYTE_SCALE = 128f
+    private const val WIENER_POWER_FLOOR = 1e-12
 
     private val TWO_POW_NEG_ONE_SIXTH = 2f.pow(-1f / 6f)
     private val TWO_POW_POS_ONE_SIXTH = 2f.pow(1f / 6f)
@@ -85,6 +91,7 @@ object FftAnalyzer {
 
         val bandEnergiesNorm = extractIsoBands(mags, halfN, df, totalEnergy)
         val displayBins36 = extractDisplayBins(mags, halfN, df, totalEnergy)
+        val spectralFlatness = computeSpectralFlatness(mags, halfN)
         val spectralTag = if (broadbandRms < SILENT_RMS_THRESHOLD) {
             "Balanced"
         } else {
@@ -96,7 +103,29 @@ object FftAnalyzer {
             displayBins36 = displayBins36,
             broadbandRms = broadbandRms,
             spectralTag = spectralTag,
+            spectralFlatness = spectralFlatness,
         )
+    }
+
+    /**
+     * Computes Wiener entropy over raw linear FFT bin powers (`k = 1..halfN`).
+     * Tonal and pink-balanced spectra score low (< 0.55), while broadband white/quantization noise scores high (>= 0.72).
+     */
+    private fun computeSpectralFlatness(mags: FloatArray, halfN: Int): Float {
+        if (halfN <= 0) return 0f
+        var sumLog = 0.0
+        var sumPower = 0.0
+        for (k in 1..halfN) {
+            val mag = mags[k].toDouble()
+            val power = mag * mag
+            sumLog += ln(power + WIENER_POWER_FLOOR)
+            sumPower += power
+        }
+        val binCount = halfN.toDouble()
+        val meanLog = sumLog / binCount
+        val meanPower = (sumPower / binCount) + WIENER_POWER_FLOOR
+        val flatness = exp(meanLog) / meanPower
+        return if (flatness.isFinite()) flatness.toFloat().coerceIn(0f, 1f) else 0f
     }
 
     private fun extractIsoBands(
@@ -196,5 +225,6 @@ object FftAnalyzer {
         displayBins36 = FloatArray(DISPLAY_BIN_COUNT),
         broadbandRms = 0f,
         spectralTag = "Balanced",
+        spectralFlatness = 0f,
     )
 }

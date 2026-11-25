@@ -1,16 +1,21 @@
 package com.orbiteq.app.dsp
 
+import com.orbiteq.app.model.CustomHeadphoneProfile
 import com.orbiteq.app.model.EngineStatus
 import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.PleasureMode
 import com.orbiteq.app.model.ResponseSpeed
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
+import kotlin.math.log2
 import kotlin.math.max
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 class AdaptiveEqEngineTest {
 
@@ -18,7 +23,8 @@ class AdaptiveEqEngineTest {
     fun q30CleanBaseCompensationLandsInPreEqAndAddsWithManualTrims() {
         val engine = AdaptiveEqEngine()
         val trims = listOf(1.5f, 0f, -1.0f, 0f, 0.5f, 0f, -1.0f, 0.5f, 2.0f, -0.5f)
-        val expectedQ30 = PleasureProfiles.compensationCurveFor(HeadphoneProfile.Q30_CLEAN_BASE)
+        val expectedQ30_31 = PleasureProfiles.compensationCurve31For(HeadphoneProfile.Q30_CLEAN_BASE)
+        val trims31 = PleasureProfiles.interpolate10To31(trims.toFloatArray())
 
         val frame = engine.processFrame(
             fftBytes = ByteArray(1024),
@@ -37,10 +43,12 @@ class AdaptiveEqEngineTest {
             manualTrimsDb = trims,
         )
 
-        val expectedPre = FloatArray(10) { i -> (expectedQ30[i] + trims[i]).coerceIn(-15f, 15f) }
-        assertArrayEquals(expectedPre, frame.preEqDb, 0.0001f)
+        val expectedPre31 = FloatArray(31) { i -> (expectedQ30_31[i] + trims31[i]).coerceIn(-15f, 15f) }
+        val expectedPre10 = PleasureProfiles.sample31To10(expectedPre31)
+        assertArrayEquals(expectedPre31, frame.preEq31Db, 0.0001f)
+        assertArrayEquals(expectedPre10, frame.preEqDb, 0.0001f)
         assertArrayEquals(FloatArray(10), frame.postEqDb, 0.0001f)
-        assertArrayEquals(expectedPre, frame.totalEqDb, 0.0001f)
+        assertArrayEquals(expectedPre10, frame.totalEqDb, 0.0001f)
     }
 
     @Test
@@ -411,7 +419,9 @@ class AdaptiveEqEngineTest {
             abs(laterFallback.adaptiveDeltaDb[2]) < abs(initialMudDelta) * 0.2f,
         )
         assertArrayEquals(
-            PleasureProfiles.compensationCurveFor(HeadphoneProfile.Q30_CLEAN_BASE),
+            PleasureProfiles.sample31To10(
+                PleasureProfiles.compensationCurve31For(HeadphoneProfile.Q30_CLEAN_BASE),
+            ),
             laterFallback.preEqDb,
             0.0001f,
         )
@@ -493,7 +503,9 @@ class AdaptiveEqEngineTest {
             abs(tier2Immediate.adaptiveDeltaDb[2]) < abs(initialMudDelta),
         )
         assertArrayEquals(
-            PleasureProfiles.compensationCurveFor(HeadphoneProfile.Q30_CLEAN_BASE),
+            PleasureProfiles.sample31To10(
+                PleasureProfiles.compensationCurve31For(HeadphoneProfile.Q30_CLEAN_BASE),
+            ),
             tier2Immediate.preEqDb,
             0.0001f,
         )
@@ -577,6 +589,494 @@ class AdaptiveEqEngineTest {
         assertArrayEquals(FloatArray(10), idleFrame.totalEqDb, 0.0001f)
         assertEquals(0f, idleFrame.inputGainDb, 0.0001f)
         assertEquals(0f, idleFrame.loudnessBoostDb, 0.0001f)
+        assertArrayEquals(FloatArray(31), idleFrame.preEq31Db, 0.0001f)
+        assertEquals(0f, idleFrame.leftBalanceTrimDb, 0.0001f)
+        assertEquals(0f, idleFrame.rightBalanceTrimDb, 0.0001f)
+        assertArrayEquals(FloatArray(31), bypassFrame.preEq31Db, 0.0001f)
+        assertEquals(0f, bypassFrame.leftBalanceTrimDb, 0.0001f)
+        assertEquals(0f, bypassFrame.rightBalanceTrimDb, 0.0001f)
+    }
+
+    @Test
+    fun sampleRateHzForwardsToFftAnalyzerAndAlignsAdaptiveBands() {
+        val engine96k = AdaptiveEqEngine()
+        val bin11Fft = ByteArray(1024)
+        bin11Fft[2 * 11] = 96
+
+        lateinit var frame96k: EqEngineFrame
+        repeat(10) { step ->
+            frame96k = engine96k.processFrame(
+                fftBytes = bin11Fft,
+                nowMs = step * 50L,
+                isMediaPlaying = true,
+                powerEnabled = true,
+                bypassed = false,
+                mode = PleasureMode.NOVA,
+                intensityPercent = 100,
+                speed = ResponseSpeed.REACTIVE,
+                bassMacroDb = 0f,
+                airMacroDb = 0f,
+                dynamicLoudness = false,
+                volumeRatio = 0.8f,
+                headphoneProfile = HeadphoneProfile.FLAT_GENERIC,
+                manualTrimsDb = List(10) { 0f },
+                sampleRateHz = 96000,
+            )
+        }
+
+        // At 96 kHz, bin 11 is 1031.25 Hz -> cuts 1 kHz (band 5), not 500 Hz (band 4)
+        assertTrue(
+            "At 96 kHz, 1 kHz delta (${frame96k.adaptiveDeltaDb[5]}) should be strongly negative",
+            frame96k.adaptiveDeltaDb[5] < -0.5f,
+        )
+        assertTrue(
+            "At 96 kHz, 500 Hz delta (${frame96k.adaptiveDeltaDb[4]}) should lift rather than cut",
+            frame96k.adaptiveDeltaDb[4] > 0f,
+        )
+    }
+
+    @Test
+    fun closedLoopDeembeddingConvergesSmoothlyForPostEffectAndPreEffectWithoutOscillation() {
+        // (a) Simulated post-effect feedback with GRAVITY + Q30_CLEAN_BASE over 200 frames
+        val postEffectEngine = AdaptiveEqEngine()
+        val postDeltas = mutableListOf<FloatArray>()
+        var prevTotalEq = FloatArray(10)
+        lateinit var lastPostFrame: EqEngineFrame
+
+        for (step in 0 until 200) {
+            val postFft = syntheticPinkMusicFftWithBandGainDb(prevTotalEq)
+            lastPostFrame = postEffectEngine.processFrame(
+                fftBytes = postFft,
+                nowMs = step * 50L,
+                isMediaPlaying = true,
+                powerEnabled = true,
+                bypassed = false,
+                mode = PleasureMode.GRAVITY,
+                intensityPercent = 100,
+                speed = ResponseSpeed.REACTIVE,
+                bassMacroDb = 2.0f,
+                airMacroDb = 1.0f,
+                dynamicLoudness = false,
+                volumeRatio = 0.8f,
+                headphoneProfile = HeadphoneProfile.Q30_CLEAN_BASE,
+                manualTrimsDb = List(10) { 0f },
+                deembedEnabled = true,
+            )
+            assertEquals(EngineStatus.AUTO_FFT_LOCKED, lastPostFrame.engineStatus)
+            assertTrue(lastPostFrame.adaptiveDeltaDb.all { it.isFinite() && it in -5.5f..5.5f })
+            assertTrue(lastPostFrame.totalEqDb.all { it.isFinite() })
+            postDeltas += lastPostFrame.adaptiveDeltaDb.copyOf()
+            prevTotalEq = lastPostFrame.totalEqDb
+        }
+
+        var postTailMaxJitter = 0f
+        for (i in 181 until 200) {
+            for (b in 0 until 10) {
+                val diff = abs(postDeltas[i][b] - postDeltas[i - 1][b])
+                if (diff > postTailMaxJitter) postTailMaxJitter = diff
+            }
+        }
+        assertTrue(
+            "Post-effect closed-loop final 20 frames max jitter ($postTailMaxJitter dB) must be < 0.15 dB",
+            postTailMaxJitter < 0.15f,
+        )
+
+        // Compare against post-effect feedback with deembedEnabled = false
+        val noDeembedEngine = AdaptiveEqEngine()
+        var noDeembedPrevEq = FloatArray(10)
+        lateinit var lastNoDeembedFrame: EqEngineFrame
+        for (step in 0 until 200) {
+            val postFft = syntheticPinkMusicFftWithBandGainDb(noDeembedPrevEq)
+            lastNoDeembedFrame = noDeembedEngine.processFrame(
+                fftBytes = postFft,
+                nowMs = step * 50L,
+                isMediaPlaying = true,
+                powerEnabled = true,
+                bypassed = false,
+                mode = PleasureMode.GRAVITY,
+                intensityPercent = 100,
+                speed = ResponseSpeed.REACTIVE,
+                bassMacroDb = 2.0f,
+                airMacroDb = 1.0f,
+                dynamicLoudness = false,
+                volumeRatio = 0.8f,
+                headphoneProfile = HeadphoneProfile.Q30_CLEAN_BASE,
+                manualTrimsDb = List(10) { 0f },
+                deembedEnabled = false,
+            )
+            noDeembedPrevEq = lastNoDeembedFrame.totalEqDb
+        }
+
+        val netBassWithDeembed = lastPostFrame.totalEqDb[0] + lastPostFrame.totalEqDb[1]
+        val netBassWithoutDeembed = lastNoDeembedFrame.totalEqDb[0] + lastNoDeembedFrame.totalEqDb[1]
+        assertTrue(
+            "De-embedded GRAVITY net bass ($netBassWithDeembed dB) must retain significantly more bass than without de-embedding ($netBassWithoutDeembed dB)",
+            netBassWithDeembed > netBassWithoutDeembed + 0.5f,
+        )
+        assertTrue(
+            "De-embedded 31 Hz adaptive delta (${lastPostFrame.adaptiveDeltaDb[0]} dB) must avoid self-cancellation compared to non-deembedded (${lastNoDeembedFrame.adaptiveDeltaDb[0]} dB)",
+            lastPostFrame.adaptiveDeltaDb[0] > lastNoDeembedFrame.adaptiveDeltaDb[0] + 0.4f,
+        )
+
+        // (b) Pre-effect constant spectrum with GRAVITY + Q30_CLEAN_BASE over 200 frames
+        val preEffectEngine = AdaptiveEqEngine()
+        val preDeltas = mutableListOf<FloatArray>()
+        val constantPinkFft = syntheticPinkMusicFftWithBandGainDb(FloatArray(10))
+
+        for (step in 0 until 200) {
+            val frame = preEffectEngine.processFrame(
+                fftBytes = constantPinkFft,
+                nowMs = step * 50L,
+                isMediaPlaying = true,
+                powerEnabled = true,
+                bypassed = false,
+                mode = PleasureMode.GRAVITY,
+                intensityPercent = 100,
+                speed = ResponseSpeed.REACTIVE,
+                bassMacroDb = 2.0f,
+                airMacroDb = 1.0f,
+                dynamicLoudness = false,
+                volumeRatio = 0.8f,
+                headphoneProfile = HeadphoneProfile.Q30_CLEAN_BASE,
+                manualTrimsDb = List(10) { 0f },
+                deembedEnabled = true,
+            )
+            assertEquals(EngineStatus.AUTO_FFT_LOCKED, frame.engineStatus)
+            assertTrue(frame.adaptiveDeltaDb.all { it.isFinite() && it in -5.5f..5.5f })
+            preDeltas += frame.adaptiveDeltaDb.copyOf()
+        }
+
+        var preTailMaxJitter = 0f
+        for (i in 181 until 200) {
+            for (b in 0 until 10) {
+                val diff = abs(preDeltas[i][b] - preDeltas[i - 1][b])
+                if (diff > preTailMaxJitter) preTailMaxJitter = diff
+            }
+        }
+        assertTrue(
+            "Pre-effect constant-spectrum final 20 frames max jitter ($preTailMaxJitter dB) must be < 0.15 dB",
+            preTailMaxJitter < 0.15f,
+        )
+    }
+
+    @Test
+    fun noiseFloorFlatnessGuardDecaysAdaptiveDeltaWhileKeepingAutoFftLocked() {
+        val engine = AdaptiveEqEngine()
+        val muddyFft = syntheticFftForFrequencyRange(minHz = 125f, maxHz = 250f, re = 100, im = 20)
+
+        lateinit var lockedFrame: EqEngineFrame
+        repeat(10) { step ->
+            lockedFrame = engine.processFrame(
+                fftBytes = muddyFft,
+                nowMs = step * 50L,
+                isMediaPlaying = true,
+                powerEnabled = true,
+                bypassed = false,
+                mode = PleasureMode.NOVA,
+                intensityPercent = 100,
+                speed = ResponseSpeed.REACTIVE,
+                bassMacroDb = 0f,
+                airMacroDb = 0f,
+                dynamicLoudness = false,
+                volumeRatio = 0.8f,
+                headphoneProfile = HeadphoneProfile.FLAT_GENERIC,
+                manualTrimsDb = List(10) { 0f },
+            )
+        }
+        assertEquals(EngineStatus.AUTO_FFT_LOCKED, lockedFrame.engineStatus)
+        val initialDelta = lockedFrame.adaptiveDeltaDb[2]
+        assertTrue("Expected negative delta before noise floor", initialDelta < -0.5f)
+
+        val whiteNoiseFft = syntheticWhiteNoiseFft(size = 1024, re = 2, im = 2)
+        var prevAbs = abs(initialDelta)
+        lateinit var noiseFrame: EqEngineFrame
+
+        // Advance past 1500 ms watchdog threshold (25 * 100 ms = 2500 ms)
+        repeat(25) { step ->
+            noiseFrame = engine.processFrame(
+                fftBytes = whiteNoiseFft,
+                nowMs = 1000L + step * 100L,
+                isMediaPlaying = true,
+                powerEnabled = true,
+                bypassed = false,
+                mode = PleasureMode.NOVA,
+                intensityPercent = 100,
+                speed = ResponseSpeed.REACTIVE,
+                bassMacroDb = 0f,
+                airMacroDb = 0f,
+                dynamicLoudness = false,
+                volumeRatio = 0.8f,
+                headphoneProfile = HeadphoneProfile.FLAT_GENERIC,
+                manualTrimsDb = List(10) { 0f },
+            )
+            assertEquals(
+                "Noise floor must NOT trip PROFILE_FALLBACK watchdog",
+                EngineStatus.AUTO_FFT_LOCKED,
+                noiseFrame.engineStatus,
+            )
+            val currentAbs = abs(noiseFrame.adaptiveDeltaDb[2])
+            assertTrue(
+                "Noise floor must gently decay adaptive delta ($currentAbs <= $prevAbs)",
+                currentAbs <= prevAbs + 0.0001f,
+            )
+            prevAbs = currentAbs
+        }
+
+        assertTrue(
+            "After 25 noise frames, delta (${noiseFrame.adaptiveDeltaDb[2]}) should decay significantly from $initialDelta",
+            abs(noiseFrame.adaptiveDeltaDb[2]) < abs(initialDelta) * 0.25f,
+        )
+    }
+
+    @Test
+    fun trackChangeFastDecayDropsAdaptiveDeltaByAtLeastHalfImmediately() {
+        val engine = AdaptiveEqEngine()
+        val muddyFft = syntheticFftForFrequencyRange(minHz = 125f, maxHz = 250f, re = 100, im = 20)
+
+        lateinit var prevFrame: EqEngineFrame
+        repeat(12) { step ->
+            prevFrame = engine.processFrame(
+                fftBytes = muddyFft,
+                nowMs = step * 50L,
+                isMediaPlaying = true,
+                powerEnabled = true,
+                bypassed = false,
+                mode = PleasureMode.NOVA,
+                intensityPercent = 100,
+                speed = ResponseSpeed.REACTIVE,
+                bassMacroDb = 0f,
+                airMacroDb = 0f,
+                dynamicLoudness = false,
+                volumeRatio = 0.8f,
+                headphoneProfile = HeadphoneProfile.FLAT_GENERIC,
+                manualTrimsDb = List(10) { 0f },
+                trackKey = "spotify|track a",
+            )
+        }
+        val beforeSwitch = abs(prevFrame.adaptiveDeltaDb[2])
+        assertTrue("Expected established delta before track change", beforeSwitch > 0.5f)
+
+        val transitionFrame = engine.processFrame(
+            fftBytes = ByteArray(1024),
+            nowMs = 700L,
+            isMediaPlaying = true,
+            powerEnabled = true,
+            bypassed = false,
+            mode = PleasureMode.NOVA,
+            intensityPercent = 100,
+            speed = ResponseSpeed.REACTIVE,
+            bassMacroDb = 0f,
+            airMacroDb = 0f,
+            dynamicLoudness = false,
+            volumeRatio = 0.8f,
+            headphoneProfile = HeadphoneProfile.FLAT_GENERIC,
+            manualTrimsDb = List(10) { 0f },
+            trackKey = "spotify|track b",
+        )
+        val afterSwitch = abs(transitionFrame.adaptiveDeltaDb[2])
+        assertTrue(
+            "Track switch must immediately drop abs(adaptiveDelta) by >= 50%: before=$beforeSwitch, after=$afterSwitch",
+            afterSwitch <= beforeSwitch * 0.5f,
+        )
+    }
+
+    @Test
+    fun preEq31DbCombinesCustomProfileManualTrimsAndSubsonicFilter() {
+        val engine = AdaptiveEqEngine()
+        val customGains = MutableList(31) { idx -> if (idx == 22) 4.0f else -1.0f }
+        customGains[0] = -12.0f
+        customGains[5] = 25.0f // should clamp to +15
+        val customProfile = CustomHeadphoneProfile(
+            id = "custom-hd600",
+            name = "HD 600 AutoEQ",
+            gains31Db = customGains,
+            extraHeadroomDb = 1.5f,
+        )
+        val trims = listOf(2.0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 1.0f)
+        val trims31 = PleasureProfiles.interpolate10To31(trims.toFloatArray())
+
+        val frame = engine.processFrame(
+            fftBytes = ByteArray(1024),
+            nowMs = 100L,
+            isMediaPlaying = true,
+            powerEnabled = true,
+            bypassed = false,
+            mode = PleasureMode.NOVA,
+            intensityPercent = 0,
+            speed = ResponseSpeed.BALANCED,
+            bassMacroDb = 0f,
+            airMacroDb = 0f,
+            dynamicLoudness = false,
+            volumeRatio = 0.8f,
+            headphoneProfile = HeadphoneProfile.Q30_CLEAN_BASE,
+            manualTrimsDb = trims,
+            customHeadphoneProfile = customProfile,
+            subsonicFilterEnabled = true,
+        )
+
+        // Subsonic filter applies -6.0 dB at 20 Hz (index 0) and -2.5 dB at 25 Hz (index 1)
+        // Index 0: (-12.0 + 2.0 - 6.0) = -16.0 -> clamped to -15.0
+        assertEquals(-15.0f, frame.preEq31Db[0], 0.0001f)
+        // Index 1 (25 Hz): (-1.0 + 2.0 - 2.5) = -1.5
+        assertEquals(-1.5f, frame.preEq31Db[1], 0.0001f)
+        // Index 5 (63 Hz): custom 25.0 clamped to 15.0 first, + trim[1]=0.0 -> 15.0
+        assertEquals(15.0f, frame.preEq31Db[5], 0.0001f)
+        // Index 22 (3150 Hz): custom 4.0 + trim[22] (=0.0) -> 4.0
+        assertEquals(4.0f, frame.preEq31Db[22], 0.0001f)
+        // Verify preEqDb matches sample31To10(preEq31Db)
+        assertArrayEquals(PleasureProfiles.sample31To10(frame.preEq31Db), frame.preEqDb, 0.0001f)
+        // Index 10 (200 Hz): custom -1.0 + trims31[10]
+        assertEquals(-1.0f + trims31[10], frame.preEq31Db[10], 0.0001f)
+    }
+
+    @Test
+    fun trueHeadroomModeAnd31BandCascadePeakAndCustomExtraHeadroomWorkAccurately() {
+        val engineStandard = AdaptiveEqEngine()
+        val engineTrueHeadroom = AdaptiveEqEngine()
+
+        // Custom profile with a narrow +6.0 dB peak at 3150 Hz (index 22) between 2k and 4k anchors
+        val customGains = List(31) { idx -> if (idx == 22) 6.0f else 0f }
+        val customProfile = CustomHeadphoneProfile(
+            id = "custom-peak",
+            name = "Narrow Peak",
+            gains31Db = customGains,
+            extraHeadroomDb = 1.0f,
+        )
+
+        val standardFrame = engineStandard.processFrame(
+            fftBytes = ByteArray(1024),
+            nowMs = 100L,
+            isMediaPlaying = true,
+            powerEnabled = true,
+            bypassed = false,
+            mode = PleasureMode.NOVA,
+            intensityPercent = 0,
+            speed = ResponseSpeed.BALANCED,
+            bassMacroDb = 0f,
+            airMacroDb = 0f,
+            dynamicLoudness = false,
+            volumeRatio = 0.8f,
+            headphoneProfile = HeadphoneProfile.Q30_SAFE_STACK, // ignored extraHeadroom because customProfile is set
+            manualTrimsDb = List(10) { 0f },
+            customHeadphoneProfile = customProfile,
+            trueHeadroomMode = false,
+        )
+
+        val trueHeadroomFrame = engineTrueHeadroom.processFrame(
+            fftBytes = ByteArray(1024),
+            nowMs = 100L,
+            isMediaPlaying = true,
+            powerEnabled = true,
+            bypassed = false,
+            mode = PleasureMode.NOVA,
+            intensityPercent = 0,
+            speed = ResponseSpeed.BALANCED,
+            bassMacroDb = 0f,
+            airMacroDb = 0f,
+            dynamicLoudness = false,
+            volumeRatio = 0.8f,
+            headphoneProfile = HeadphoneProfile.Q30_SAFE_STACK,
+            manualTrimsDb = List(10) { 0f },
+            customHeadphoneProfile = customProfile,
+            trueHeadroomMode = true,
+        )
+
+        // Peak at 3150 Hz is +6.0 dB, custom extraHeadroomDb is 1.0 dB
+        assertEquals(-(6.0f - 1.5f) - 1.0f, standardFrame.inputGainDb, 0.0001f)
+        assertEquals(-6.0f - 1.0f, trueHeadroomFrame.inputGainDb, 0.0001f)
+        assertEquals(1.5f, standardFrame.inputGainDb - trueHeadroomFrame.inputGainDb, 0.0001f)
+    }
+
+    @Test
+    fun channelBalanceAttenuatesOppositeChannelUpToMinus12DbNeverBoosting() {
+        val engine = AdaptiveEqEngine()
+
+        fun frameForBalance(balance: Float): EqEngineFrame = engine.processFrame(
+            fftBytes = ByteArray(1024),
+            nowMs = 100L,
+            isMediaPlaying = true,
+            powerEnabled = true,
+            bypassed = false,
+            mode = PleasureMode.NOVA,
+            intensityPercent = 0,
+            speed = ResponseSpeed.BALANCED,
+            bassMacroDb = 0f,
+            airMacroDb = 0f,
+            dynamicLoudness = false,
+            volumeRatio = 0.8f,
+            headphoneProfile = HeadphoneProfile.FLAT_GENERIC,
+            manualTrimsDb = List(10) { 0f },
+            channelBalance = balance,
+        )
+
+        val centered = frameForBalance(0f)
+        assertEquals(0f, centered.leftBalanceTrimDb, 0.0001f)
+        assertEquals(0f, centered.rightBalanceTrimDb, 0.0001f)
+
+        val rightBias = frameForBalance(0.5f)
+        assertEquals(-6.0f, rightBias.leftBalanceTrimDb, 0.0001f)
+        assertEquals(0f, rightBias.rightBalanceTrimDb, 0.0001f)
+
+        val leftBias = frameForBalance(-0.5f)
+        assertEquals(0f, leftBias.leftBalanceTrimDb, 0.0001f)
+        assertEquals(-6.0f, leftBias.rightBalanceTrimDb, 0.0001f)
+
+        val clampedRight = frameForBalance(2.5f)
+        assertEquals(-12.0f, clampedRight.leftBalanceTrimDb, 0.0001f)
+        assertEquals(0f, clampedRight.rightBalanceTrimDb, 0.0001f)
+
+        val nanBalance = frameForBalance(Float.NaN)
+        assertEquals(0f, nanBalance.leftBalanceTrimDb, 0.0001f)
+        assertEquals(0f, nanBalance.rightBalanceTrimDb, 0.0001f)
+
+        assertNotEquals(rightBias, leftBias)
+        assertEquals(rightBias, rightBias.copy())
+        assertEquals(rightBias.hashCode(), rightBias.copy().hashCode())
+    }
+
+    private fun syntheticPinkMusicFftWithBandGainDb(
+        bandGainDb: FloatArray,
+        size: Int = 1024,
+        sampleRateHz: Int = 48000,
+    ): ByteArray {
+        val bytes = ByteArray(size)
+        val halfN = size / 2
+        val df = sampleRateHz.toFloat() / size.toFloat()
+        val isoFreqs = FloatArray(10) { i -> PleasureProfiles.ISO_FREQUENCIES_HZ[i].toFloat() }
+        val logIso = FloatArray(10) { i -> log2(isoFreqs[i]) }
+
+        for (k in 1 until halfN) {
+            val freq = k * df
+            val logF = log2(freq)
+            val gainDb = when {
+                freq <= isoFreqs[0] -> bandGainDb[0]
+                freq >= isoFreqs[9] -> bandGainDb[9]
+                else -> {
+                    var idx = 0
+                    while (idx < 8 && isoFreqs[idx + 1] <= freq) {
+                        idx++
+                    }
+                    val frac = ((logF - logIso[idx]) / (logIso[idx + 1] - logIso[idx])).coerceIn(0f, 1f)
+                    bandGainDb[idx] + (bandGainDb[idx + 1] - bandGainDb[idx]) * frac
+                }
+            }
+            val baseMag = 40f / sqrt(k.toFloat())
+            val gainedMag = (baseMag * 10f.pow(gainDb / 20f)).roundToInt().coerceIn(0, 127)
+            bytes[2 * k] = gainedMag.toByte()
+            bytes[2 * k + 1] = 0
+        }
+        return bytes
+    }
+
+    private fun syntheticWhiteNoiseFft(size: Int, re: Int, im: Int): ByteArray {
+        val bytes = ByteArray(size)
+        val halfN = size / 2
+        for (k in 1 until halfN) {
+            bytes[2 * k] = (if (k % 2 == 0) re else -re).toByte()
+            bytes[2 * k + 1] = (if (k % 3 == 0) im else -im).toByte()
+        }
+        bytes[1] = sqrt((re * re + im * im).toFloat()).roundToInt().coerceIn(1, 127).toByte()
+        return bytes
     }
 
     private fun syntheticFftForFrequencyRange(

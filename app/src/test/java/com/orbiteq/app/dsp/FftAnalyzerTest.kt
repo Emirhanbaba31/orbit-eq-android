@@ -5,9 +5,12 @@ import com.orbiteq.app.model.PleasureMode
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 class FftAnalyzerTest {
 
@@ -27,6 +30,7 @@ class FftAnalyzerTest {
             assertEquals(36, frame.displayBins36.size)
             assertEquals(0f, frame.broadbandRms, 0.00001f)
             assertEquals("Balanced", frame.spectralTag)
+            assertEquals(0f, frame.spectralFlatness, 0.00001f)
             assertTrue(frame.bandEnergiesNorm.all { it.isFinite() && it == 0f })
             assertTrue(frame.displayBins36.all { it.isFinite() && it == 0f })
         }
@@ -38,6 +42,7 @@ class FftAnalyzerTest {
 
         assertEquals(0f, frame.broadbandRms, 0.00001f)
         assertEquals("Balanced", frame.spectralTag)
+        assertEquals(0f, frame.spectralFlatness, 0.00001f)
         assertEquals(10, frame.bandEnergiesNorm.size)
         assertEquals(36, frame.displayBins36.size)
         assertTrue(frame.bandEnergiesNorm.all { it.isFinite() && it == 0f })
@@ -165,6 +170,116 @@ class FftAnalyzerTest {
         val compCopy = PleasureProfiles.compensationCurveFor(HeadphoneProfile.Q30_CLEAN_BASE)
         compCopy[0] = 99f
         assertEquals(-1.5f, PleasureProfiles.compensationCurveFor(HeadphoneProfile.Q30_CLEAN_BASE)[0], 0.0001f)
+    }
+
+    @Test
+    fun spectralFlatnessSeparatesTonalAndPinkMusicFromWhiteAndQuantizationNoise() {
+        val tonalFft = syntheticFftForFrequencyRange(minHz = 700f, maxHz = 1800f, re = 84, im = -48)
+        val tonalFrame = FftAnalyzer.analyze(tonalFft, sampleRateHz = 48000)
+        assertTrue(
+            "Tonal spectrum flatness (${tonalFrame.spectralFlatness}) must be < 0.55",
+            tonalFrame.spectralFlatness in 0f..0.5499f,
+        )
+
+        val pinkMusicFft = syntheticPinkMusicFft(size = 1024, amplitudeAtK1 = 96f, rolloffExponent = 0.5f)
+        val pinkFrame = FftAnalyzer.analyze(pinkMusicFft, sampleRateHz = 48000)
+        assertTrue(
+            "Pink-balanced music flatness (${pinkFrame.spectralFlatness}) must be < 0.55",
+            pinkFrame.spectralFlatness in 0.001f..0.5499f,
+        )
+
+        val bassHeavyMusicFft = syntheticPinkMusicFft(size = 1024, amplitudeAtK1 = 110f, rolloffExponent = 0.85f)
+        val bassHeavyFrame = FftAnalyzer.analyze(bassHeavyMusicFft, sampleRateHz = 48000)
+        assertTrue(
+            "Bass-heavy music flatness (${bassHeavyFrame.spectralFlatness}) must be < 0.55",
+            bassHeavyFrame.spectralFlatness < 0.55f,
+        )
+
+        val whiteNoiseFft = syntheticWhiteNoiseFft(size = 1024, re = 48, im = 36)
+        val whiteFrame = FftAnalyzer.analyze(whiteNoiseFft, sampleRateHz = 48000)
+        assertTrue(
+            "White noise flatness (${whiteFrame.spectralFlatness}) must be >= 0.72",
+            whiteFrame.spectralFlatness in 0.72f..1f,
+        )
+
+        val quantizationNoiseFft = syntheticWhiteNoiseFft(size = 1024, re = 1, im = 1)
+        val quantFrame = FftAnalyzer.analyze(quantizationNoiseFft, sampleRateHz = 48000)
+        assertTrue(
+            "Quantization noise floor flatness (${quantFrame.spectralFlatness}) must be >= 0.72",
+            quantFrame.spectralFlatness in 0.72f..1f,
+        )
+    }
+
+    @Test
+    fun sampleRateHzShiftsBinFrequenciesToMatchingIsoBands() {
+        val bin11Bytes = ByteArray(1024)
+        bin11Bytes[2 * 11] = 96
+        bin11Bytes[2 * 11 + 1] = 0
+
+        // At 48 kHz: k=11 -> 515.625 Hz (500 Hz band index 4)
+        val frame48k = FftAnalyzer.analyze(bin11Bytes, sampleRateHz = 48000)
+        assertTrue(
+            "48 kHz should peak at 500 Hz (${frame48k.bandEnergiesNorm[4]}) over 1 kHz (${frame48k.bandEnergiesNorm[5]})",
+            frame48k.bandEnergiesNorm[4] > frame48k.bandEnergiesNorm[5] + 0.5f,
+        )
+
+        // At 96 kHz: k=11 -> 1031.25 Hz (1000 Hz band index 5)
+        val frame96k = FftAnalyzer.analyze(bin11Bytes, sampleRateHz = 96000)
+        assertTrue(
+            "96 kHz should peak at 1 kHz (${frame96k.bandEnergiesNorm[5]}) over 500 Hz (${frame96k.bandEnergiesNorm[4]})",
+            frame96k.bandEnergiesNorm[5] > frame96k.bandEnergiesNorm[4] + 0.5f,
+        )
+
+        // At 44.1 kHz: k=23 -> ~990.5 Hz (1000 Hz band index 5)
+        val bin23Bytes = ByteArray(1024)
+        bin23Bytes[2 * 23] = 96
+        val frame44k = FftAnalyzer.analyze(bin23Bytes, sampleRateHz = 44100)
+        assertTrue(
+            "44.1 kHz k=23 should peak at 1 kHz (${frame44k.bandEnergiesNorm[5]}) over 2 kHz (${frame44k.bandEnergiesNorm[6]})",
+            frame44k.bandEnergiesNorm[5] > frame44k.bandEnergiesNorm[6] + 0.5f,
+        )
+    }
+
+    @Test
+    fun spectralFrameEqualsAndHashCodeIncludeSpectralFlatness() {
+        val a = SpectralFrame(
+            bandEnergiesNorm = FloatArray(10),
+            displayBins36 = FloatArray(36),
+            broadbandRms = 0.25f,
+            spectralTag = "Balanced",
+            spectralFlatness = 0.2f,
+        )
+        val b = a.copy(spectralFlatness = 0.8f)
+        assertNotEquals(a, b)
+        assertEquals(a, a.copy())
+        assertEquals(a.hashCode(), a.copy().hashCode())
+    }
+
+    private fun syntheticPinkMusicFft(
+        size: Int,
+        amplitudeAtK1: Float,
+        rolloffExponent: Float,
+    ): ByteArray {
+        val bytes = ByteArray(size)
+        val halfN = size / 2
+        for (k in 1 until halfN) {
+            val kPow = k.toDouble().pow(rolloffExponent.toDouble()).toFloat()
+            val mag = (amplitudeAtK1 / kPow).roundToInt().coerceIn(0, 127)
+            bytes[2 * k] = mag.toByte()
+            bytes[2 * k + 1] = 0
+        }
+        return bytes
+    }
+
+    private fun syntheticWhiteNoiseFft(size: Int, re: Int, im: Int): ByteArray {
+        val bytes = ByteArray(size)
+        val halfN = size / 2
+        for (k in 1 until halfN) {
+            bytes[2 * k] = (if (k % 2 == 0) re else -re).toByte()
+            bytes[2 * k + 1] = (if (k % 3 == 0) im else -im).toByte()
+        }
+        bytes[1] = sqrt((re * re + im * im).toFloat()).roundToInt().coerceIn(1, 127).toByte()
+        return bytes
     }
 
     private fun syntheticFftForFrequencyRange(
