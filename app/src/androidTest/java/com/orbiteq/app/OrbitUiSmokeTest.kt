@@ -180,6 +180,7 @@ class OrbitUiSmokeTest {
 
         composeRule.onNodeWithTag("activity_list")
             .performScrollToNode(hasText(shareLabel))
+        composeRule.onNodeWithText("Ready").assertIsDisplayed()
         composeRule.onNodeWithText(exportLabel).assertIsDisplayed().performClick()
         composeRule.onNodeWithText(importLabel).assertIsDisplayed().performClick()
         composeRule.onNodeWithText(copyLabel).assertIsDisplayed().performClick()

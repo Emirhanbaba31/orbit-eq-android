@@ -152,176 +152,200 @@ fun ActivityScreen(
         uiState.recentActivity.associateBy { AppRuleResolver.trackKey(it.packageName, it.trackTitle) }
     }
 
-    LazyColumn(
+    val startPad = contentPadding.calculateStartPadding(layoutDirection) + 16.dp
+    val endPad = contentPadding.calculateEndPadding(layoutDirection) + 16.dp
+    val topPad = contentPadding.calculateTopPadding()
+    val bottomPad = contentPadding.calculateBottomPadding()
+    val hasBanner = !statusBannerMessage.isNullOrBlank()
+    var lastBannerMessage by rememberSaveable { mutableStateOf("") }
+    if (!statusBannerMessage.isNullOrBlank()) {
+        lastBannerMessage = statusBannerMessage
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .widthIn(max = 720.dp)
-            .testTag("activity_list"),
-        contentPadding = PaddingValues(
-            start = contentPadding.calculateStartPadding(layoutDirection) + 16.dp,
-            end = contentPadding.calculateEndPadding(layoutDirection) + 16.dp,
-            top = contentPadding.calculateTopPadding(),
-            bottom = contentPadding.calculateBottomPadding(),
-        ),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .widthIn(max = 720.dp),
     ) {
-        if (!statusBannerMessage.isNullOrBlank()) {
-            item(key = "status_banner") {
+        AnimatedVisibility(visible = hasBanner) {
+            if (lastBannerMessage.isNotBlank()) {
                 StatusFeedbackBanner(
-                    message = statusBannerMessage,
+                    message = lastBannerMessage,
                     onDismiss = onDismissStatusBanner,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            start = startPad,
+                            end = endPad,
+                            top = topPad,
+                            bottom = 10.dp,
+                        ),
                 )
             }
         }
 
-        item(key = "live_engine_telemetry") {
-            LiveEngineTelemetryCard(
-                uiState = uiState,
-                onSessionModeChange = { mode ->
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onSessionModeChange(mode)
-                },
-            )
-        }
-
-        item(key = "q30_headphone_compensation") {
-            HeadphoneCompensationCard(
-                uiState = uiState,
-                onSelectProfile = { profile ->
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onHeadphoneProfileChange(profile)
-                },
-                onSelectCustomProfile = { profileId ->
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onSelectCustomHeadphoneProfile(profileId)
-                },
-                onDeleteCustomProfile = { profileId ->
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onDeleteCustomHeadphoneProfile(profileId)
-                },
-                onOpenAutoEqImport = { showAutoEqImportDialog = true },
-                onDismissQ30Tip = onDismissQ30Tip,
-            )
-        }
-
-        item(key = "guided_permissions") {
-            GuidedSetupCard(
-                permissionState = permissionState,
-                onRequestRecordAudio = onRequestRecordAudio,
-                onOpenNotificationListenerSettings = onOpenNotificationListenerSettings,
-                onRequestPostNotifications = onRequestPostNotifications,
-                onRequestBatteryOptimizationExemption = onRequestBatteryOptimizationExemption,
-            )
-        }
-
-        item(key = "app_rules") {
-            AppSmartRulesCard(
-                uiState = uiState,
-                rules = sortedRules,
-                onAddActiveAppRule = { pkg, appName ->
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onSetAppRule(
-                        AppRule(
-                            packageName = pkg,
-                            displayName = appName,
-                            action = AppRuleAction.USE_MODE,
-                            mode = uiState.activeMode,
-                        ),
-                    )
-                },
-                onEditRule = { rule -> editingRulePkg = rule.packageName },
-            )
-        }
-
-        if (uiState.settings.pinnedTracks.isNotEmpty()) {
-            item(key = "pinned_tracks") {
-                PinnedTracksCard(
-                    pinnedTracks = uiState.settings.pinnedTracks,
-                    historyByTrackKey = historyByTrackKey,
-                    appRules = uiState.settings.appRules,
-                    onUnpin = { pkg, title, mode ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .testTag("activity_list"),
+            contentPadding = PaddingValues(
+                start = startPad,
+                end = endPad,
+                top = if (hasBanner) 2.dp else topPad,
+                bottom = bottomPad,
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item(key = "live_engine_telemetry") {
+                LiveEngineTelemetryCard(
+                    uiState = uiState,
+                    onSessionModeChange = { mode ->
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onTogglePinTrack(pkg, title, mode)
+                        onSessionModeChange(mode)
                     },
                 )
             }
-        }
 
-        item(key = "recent_activity_header") {
-            SectionLabelText(
-                text = stringResource(R.string.activity_recent_title),
-                modifier = Modifier.padding(top = 4.dp, start = 2.dp),
-            )
-        }
+            item(key = "q30_headphone_compensation") {
+                HeadphoneCompensationCard(
+                    uiState = uiState,
+                    onSelectProfile = { profile ->
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onHeadphoneProfileChange(profile)
+                    },
+                    onSelectCustomProfile = { profileId ->
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onSelectCustomHeadphoneProfile(profileId)
+                    },
+                    onDeleteCustomProfile = { profileId ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onDeleteCustomHeadphoneProfile(profileId)
+                    },
+                    onOpenAutoEqImport = { showAutoEqImportDialog = true },
+                    onDismissQ30Tip = onDismissQ30Tip,
+                )
+            }
 
-        if (uiState.recentActivity.isEmpty()) {
-            item(key = "recent_activity_empty") {
-                OrbitGlassCard {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Icon(
-                            imageVector = OrbitIcons.MusicNote,
-                            contentDescription = null,
-                            tint = LocalOrbitColors.current.textMuted,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        Text(
-                            text = stringResource(R.string.activity_empty),
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = LocalOrbitColors.current.textSecondary,
+            item(key = "guided_permissions") {
+                GuidedSetupCard(
+                    permissionState = permissionState,
+                    onRequestRecordAudio = onRequestRecordAudio,
+                    onOpenNotificationListenerSettings = onOpenNotificationListenerSettings,
+                    onRequestPostNotifications = onRequestPostNotifications,
+                    onRequestBatteryOptimizationExemption = onRequestBatteryOptimizationExemption,
+                )
+            }
+
+            item(key = "app_rules") {
+                AppSmartRulesCard(
+                    uiState = uiState,
+                    rules = sortedRules,
+                    onAddActiveAppRule = { pkg, appName ->
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onSetAppRule(
+                            AppRule(
+                                packageName = pkg,
+                                displayName = appName,
+                                action = AppRuleAction.USE_MODE,
+                                mode = uiState.activeMode,
                             ),
                         )
-                    }
+                    },
+                    onEditRule = { rule -> editingRulePkg = rule.packageName },
+                )
+            }
+
+            if (uiState.settings.pinnedTracks.isNotEmpty()) {
+                item(key = "pinned_tracks") {
+                    PinnedTracksCard(
+                        pinnedTracks = uiState.settings.pinnedTracks,
+                        historyByTrackKey = historyByTrackKey,
+                        appRules = uiState.settings.appRules,
+                        onUnpin = { pkg, title, mode ->
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onTogglePinTrack(pkg, title, mode)
+                        },
+                    )
                 }
             }
-        } else {
-            items(
-                items = uiState.recentActivity,
-                key = { it.id },
-            ) { entry ->
-                val trackKey = AppRuleResolver.trackKey(entry.packageName, entry.trackTitle)
-                val pinnedMode = uiState.settings.pinnedTracks[trackKey]
-                val isPinned = pinnedMode != null
-                val pinTargetMode = if (trackKey == currentNowPlayingKey) {
-                    uiState.activeMode
-                } else {
-                    entry.modeUsed
+
+            item(key = "recent_activity_header") {
+                SectionLabelText(
+                    text = stringResource(R.string.activity_recent_title),
+                    modifier = Modifier.padding(top = 4.dp, start = 2.dp),
+                )
+            }
+
+            if (uiState.recentActivity.isEmpty()) {
+                item(key = "recent_activity_empty") {
+                    OrbitGlassCard {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Icon(
+                                imageVector = OrbitIcons.MusicNote,
+                                contentDescription = null,
+                                tint = LocalOrbitColors.current.textMuted,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Text(
+                                text = stringResource(R.string.activity_empty),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = LocalOrbitColors.current.textSecondary,
+                                ),
+                            )
+                        }
+                    }
                 }
-                RecentActivityRowCard(
-                    entry = entry,
-                    pinnedMode = pinnedMode,
-                    isPinned = isPinned,
-                    onTogglePin = {
+            } else {
+                items(
+                    items = uiState.recentActivity,
+                    key = { it.id },
+                ) { entry ->
+                    val trackKey = AppRuleResolver.trackKey(entry.packageName, entry.trackTitle)
+                    val pinnedMode = uiState.settings.pinnedTracks[trackKey]
+                    val isPinned = pinnedMode != null
+                    val pinTargetMode = if (trackKey == currentNowPlayingKey) {
+                        uiState.activeMode
+                    } else {
+                        entry.modeUsed
+                    }
+                    RecentActivityRowCard(
+                        entry = entry,
+                        pinnedMode = pinnedMode,
+                        isPinned = isPinned,
+                        onTogglePin = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onTogglePinTrack(
+                                entry.packageName,
+                                entry.trackTitle,
+                                pinnedMode ?: pinTargetMode,
+                            )
+                        },
+                    )
+                }
+            }
+
+            item(key = "appearance_theme_card") {
+                AppearanceThemeCard(
+                    selectedTheme = uiState.settings.themeMode,
+                    onThemeModeChange = { theme ->
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onTogglePinTrack(
-                            entry.packageName,
-                            entry.trackTitle,
-                            pinnedMode ?: pinTargetMode,
-                        )
+                        onThemeModeChange(theme)
                     },
                 )
             }
-        }
 
-        item(key = "appearance_theme_card") {
-            AppearanceThemeCard(
-                selectedTheme = uiState.settings.themeMode,
-                onThemeModeChange = { theme ->
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onThemeModeChange(theme)
-                },
-            )
-        }
-
-        item(key = "backup_diagnostics_card") {
-            BackupDiagnosticsCard(
-                onExportBackupJson = onExportBackupJson,
-                onImportBackupJson = onImportBackupJson,
-                onCopyDiagnostics = onCopyDiagnostics,
-                onShareDiagnostics = onShareDiagnostics,
-            )
+            item(key = "backup_diagnostics_card") {
+                BackupDiagnosticsCard(
+                    onExportBackupJson = onExportBackupJson,
+                    onImportBackupJson = onImportBackupJson,
+                    onCopyDiagnostics = onCopyDiagnostics,
+                    onShareDiagnostics = onShareDiagnostics,
+                )
+            }
         }
     }
 
@@ -377,11 +401,13 @@ fun ActivityScreen(
 private fun StatusFeedbackBanner(
     message: String,
     onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val colors = LocalOrbitColors.current
     val dismissCd = stringResource(R.string.banner_dismiss_cd)
 
     OrbitGlassCard(
+        modifier = modifier,
         highlighted = true,
         cornerRadius = 14.dp,
         contentPadding = PaddingValues(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
