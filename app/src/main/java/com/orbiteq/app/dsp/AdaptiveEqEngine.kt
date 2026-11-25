@@ -1,6 +1,7 @@
 package com.orbiteq.app.dsp
 
 import com.orbiteq.app.model.CustomHeadphoneProfile
+import com.orbiteq.app.model.DeEsserMode
 import com.orbiteq.app.model.EngineStatus
 import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.PleasureMode
@@ -23,6 +24,8 @@ data class EqEngineFrame(
     val preEq31Db: FloatArray = PleasureProfiles.interpolate10To31(preEqDb),
     val leftBalanceTrimDb: Float = 0f,
     val rightBalanceTrimDb: Float = 0f,
+    val totalEq31Db: FloatArray = FloatArray(31),
+    val bypassMatchGainDb: Float = 0f,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -38,7 +41,9 @@ data class EqEngineFrame(
             spectralTag == other.spectralTag &&
             preEq31Db.contentEquals(other.preEq31Db) &&
             leftBalanceTrimDb == other.leftBalanceTrimDb &&
-            rightBalanceTrimDb == other.rightBalanceTrimDb
+            rightBalanceTrimDb == other.rightBalanceTrimDb &&
+            totalEq31Db.contentEquals(other.totalEq31Db) &&
+            bypassMatchGainDb == other.bypassMatchGainDb
     }
 
     override fun hashCode(): Int {
@@ -54,6 +59,8 @@ data class EqEngineFrame(
         result = 31 * result + preEq31Db.contentHashCode()
         result = 31 * result + leftBalanceTrimDb.hashCode()
         result = 31 * result + rightBalanceTrimDb.hashCode()
+        result = 31 * result + totalEq31Db.contentHashCode()
+        result = 31 * result + bypassMatchGainDb.hashCode()
         return result
     }
 }
@@ -66,6 +73,7 @@ class AdaptiveEqEngine {
     private var lastTrackKey: String? = null
     private var silentSinceMs: Long? = null
     private var inProfileFallback: Boolean = false
+    private var lastActiveBypassMatchGainDb: Float = 0f
 
     fun processFrame(
         fftBytes: ByteArray?,
@@ -90,6 +98,10 @@ class AdaptiveEqEngine {
         channelBalance: Float = 0f,
         trackKey: String? = null,
         deembedEnabled: Boolean = true,
+        toneTiltDbPerOct: Float = 0f,
+        deEsserMode: DeEsserMode = DeEsserMode.OFF,
+        loudnessMatchedBypass: Boolean = true,
+        isAutoBypassed: Boolean = false,
     ): EqEngineFrame {
         if (!powerEnabled) {
             reset()
@@ -106,6 +118,8 @@ class AdaptiveEqEngine {
                 preEq31Db = FloatArray(PRE_EQ_31_BAND_COUNT),
                 leftBalanceTrimDb = 0f,
                 rightBalanceTrimDb = 0f,
+                totalEq31Db = FloatArray(PRE_EQ_31_BAND_COUNT),
+                bypassMatchGainDb = 0f,
             )
         }
 
@@ -118,12 +132,21 @@ class AdaptiveEqEngine {
 
         if (bypassed) {
             lastAppliedTotalEqDb.fill(0f)
+            val matchGain = if (
+                loudnessMatchedBypass &&
+                !isAutoBypassed &&
+                lastActiveBypassMatchGainDb < BYPASS_MATCH_ACTIVATION_THRESHOLD_DB
+            ) {
+                lastActiveBypassMatchGainDb
+            } else {
+                0f
+            }
             return EqEngineFrame(
                 preEqDb = FloatArray(BAND_COUNT),
                 postEqDb = FloatArray(BAND_COUNT),
                 totalEqDb = FloatArray(BAND_COUNT),
                 adaptiveDeltaDb = FloatArray(BAND_COUNT),
-                inputGainDb = 0f,
+                inputGainDb = matchGain,
                 loudnessBoostDb = 0f,
                 engineStatus = EngineStatus.BYPASSED,
                 displayBins36 = smoothedDisplay.copyOf(),
@@ -131,6 +154,8 @@ class AdaptiveEqEngine {
                 preEq31Db = FloatArray(PRE_EQ_31_BAND_COUNT),
                 leftBalanceTrimDb = 0f,
                 rightBalanceTrimDb = 0f,
+                totalEq31Db = FloatArray(PRE_EQ_31_BAND_COUNT),
+                bypassMatchGainDb = matchGain,
             )
         }
 
@@ -162,11 +187,13 @@ class AdaptiveEqEngine {
             hasActiveSignal = hasActiveSignal,
             isNoiseFloor = isNoiseFloor,
             bandEnergiesNorm = effectiveBandEnergies,
+            mode = mode,
             intensityScale = intensityScale,
             maxScaledDelta = maxScaledDelta,
             attackAlpha = attackAlpha,
             releaseAlpha = releaseAlpha,
             isMediaPlaying = isMediaPlaying,
+            deEsserMode = deEsserMode,
         )
 
         val preEq31Db = buildPreEq31Db(
@@ -174,15 +201,18 @@ class AdaptiveEqEngine {
             customHeadphoneProfile = customHeadphoneProfile,
             manualTrimsDb = manualTrimsDb,
             subsonicFilterEnabled = subsonicFilterEnabled,
+            toneTiltDbPerOct = toneTiltDbPerOct,
         )
         val sampledPre10 = PleasureProfiles.sample31To10(preEq31Db)
         val preEqDb = FloatArray(BAND_COUNT) { i ->
-            sanitizeFinite(sampledPre10[i]).coerceIn(MIN_EQ_DB, MAX_EQ_DB)
+            normalizeZero(sanitizeFinite(sampledPre10[i]).coerceIn(MIN_EQ_DB, MAX_EQ_DB))
         }
 
         val safeVolume = sanitizeFinite(volumeRatio, default = 1f).coerceIn(0f, 1f)
         val loudnessScale = if (dynamicLoudness && safeVolume < LOUDNESS_VOLUME_THRESHOLD) {
-            ((LOUDNESS_VOLUME_THRESHOLD - safeVolume) / LOUDNESS_VOLUME_THRESHOLD).coerceIn(0f, 1f)
+            ((LOUDNESS_VOLUME_THRESHOLD - safeVolume) / LOUDNESS_VOLUME_THRESHOLD)
+                .pow(LOUDNESS_EXPONENT)
+                .coerceIn(0f, 1f)
         } else {
             0f
         }
@@ -197,16 +227,17 @@ class AdaptiveEqEngine {
                 safeBass * BASS_MACRO_WEIGHTS[i] +
                 safeAir * AIR_MACRO_WEIGHTS[i] +
                 LOUDNESS_WEIGHTS[i] * loudnessScale
-            sanitizeFinite(rawPost).coerceIn(MIN_EQ_DB, MAX_EQ_DB)
+            normalizeZero(sanitizeFinite(rawPost).coerceIn(MIN_EQ_DB, MAX_EQ_DB))
         }
 
         val postEq31Db = PleasureProfiles.interpolate10To31(postEqDb)
         var peakPositiveCascadeDb = 0f
-        for (i in 0 until PRE_EQ_31_BAND_COUNT) {
+        val totalEq31Db = FloatArray(PRE_EQ_31_BAND_COUNT) { i ->
             val cascade31 = preEq31Db[i] + postEq31Db[i]
             if (cascade31.isFinite() && cascade31 > peakPositiveCascadeDb) {
                 peakPositiveCascadeDb = cascade31
             }
+            normalizeZero(sanitizeFinite(cascade31).coerceIn(MIN_EQ_DB, MAX_EQ_DB))
         }
 
         val totalEqDb = FloatArray(BAND_COUNT) { i ->
@@ -214,7 +245,7 @@ class AdaptiveEqEngine {
             if (combined.isFinite() && combined > peakPositiveCascadeDb) {
                 peakPositiveCascadeDb = combined
             }
-            sanitizeFinite(combined).coerceIn(MIN_EQ_DB, MAX_EQ_DB)
+            normalizeZero(sanitizeFinite(combined).coerceIn(MIN_EQ_DB, MAX_EQ_DB))
         }
         totalEqDb.copyInto(lastAppliedTotalEqDb)
 
@@ -226,6 +257,11 @@ class AdaptiveEqEngine {
         }
         val inputGainDb = normalizeZero(
             sanitizeFinite(-max(0f, peakPositiveCascadeDb - allowanceDb) - extraHeadroomDb),
+        )
+
+        lastActiveBypassMatchGainDb = normalizeZero(
+            computePerceivedNetGainDb(totalEq31Db, inputGainDb)
+                .coerceIn(MIN_BYPASS_MATCH_GAIN_DB, 0.0f),
         )
 
         val safeBalance = sanitizeFinite(channelBalance).coerceIn(-1f, 1f)
@@ -245,7 +281,25 @@ class AdaptiveEqEngine {
             preEq31Db = preEq31Db,
             leftBalanceTrimDb = leftBalanceTrimDb,
             rightBalanceTrimDb = rightBalanceTrimDb,
+            totalEq31Db = totalEq31Db,
+            bypassMatchGainDb = 0f,
         )
+    }
+
+    /**
+     * Estimates perceived midband-weighted net gain in dB so loudness-matched bypass
+     * can attenuate bypass to match active EQ without letting sub-bass or 20 kHz extremes skew it.
+     */
+    internal fun computePerceivedNetGainDb(
+        totalEq31Db: FloatArray,
+        inputGainDb: Float,
+    ): Float {
+        var weightedEqDb = 0f
+        for (i in 0 until PRE_EQ_31_BAND_COUNT) {
+            val eqDb = sanitizeFinite(totalEq31Db.getOrElse(i) { 0f })
+            weightedEqDb += eqDb * PERCEPTUAL_LOUDNESS_WEIGHTS_31[i]
+        }
+        return normalizeZero(sanitizeFinite(inputGainDb) + sanitizeFinite(weightedEqDb))
     }
 
     fun reset() {
@@ -255,6 +309,7 @@ class AdaptiveEqEngine {
         lastTrackKey = null
         silentSinceMs = null
         inProfileFallback = false
+        lastActiveBypassMatchGainDb = 0f
     }
 
     private fun applyTrackChangeDecayIfNeeded(trackKey: String?) {
@@ -312,6 +367,7 @@ class AdaptiveEqEngine {
         customHeadphoneProfile: CustomHeadphoneProfile?,
         manualTrimsDb: List<Float>,
         subsonicFilterEnabled: Boolean,
+        toneTiltDbPerOct: Float,
     ): FloatArray {
         val baseCurve31 = if (customHeadphoneProfile != null) {
             FloatArray(PRE_EQ_31_BAND_COUNT) { i ->
@@ -326,6 +382,7 @@ class AdaptiveEqEngine {
             sanitizeFinite(manualTrimsDb.getOrElse(i) { 0f })
         }
         val trims31 = PleasureProfiles.interpolate10To31(sanitizedTrims10)
+        val tilt31 = PleasureProfiles.analogTiltCurve31(toneTiltDbPerOct)
 
         return FloatArray(PRE_EQ_31_BAND_COUNT) { i ->
             val subsonic = if (subsonicFilterEnabled) {
@@ -337,7 +394,10 @@ class AdaptiveEqEngine {
             } else {
                 0f
             }
-            sanitizeFinite(baseCurve31[i] + trims31[i] + subsonic).coerceIn(MIN_EQ_DB, MAX_EQ_DB)
+            normalizeZero(
+                sanitizeFinite(baseCurve31[i] + trims31[i] + subsonic + tilt31[i])
+                    .coerceIn(MIN_EQ_DB, MAX_EQ_DB),
+            )
         }
     }
 
@@ -382,11 +442,13 @@ class AdaptiveEqEngine {
         hasActiveSignal: Boolean,
         isNoiseFloor: Boolean,
         bandEnergiesNorm: FloatArray,
+        mode: PleasureMode,
         intensityScale: Float,
         maxScaledDelta: Float,
         attackAlpha: Float,
         releaseAlpha: Float,
         isMediaPlaying: Boolean,
+        deEsserMode: DeEsserMode,
     ) {
         if (isNoiseFloor) {
             decaySmoothedDelta(releaseAlpha = releaseAlpha, maxScaledDelta = maxScaledDelta)
@@ -404,8 +466,16 @@ class AdaptiveEqEngine {
             return
         }
 
+        val modeRefShift = PleasureProfiles.adaptiveReferenceShiftFor(mode)
         for (i in 0 until BAND_COUNT) {
-            val rawTarget = computePsychoacousticTargetDelta(i, bandEnergiesNorm[i]) * intensityScale
+            val rawTarget = computePsychoacousticTargetDelta(
+                bandIndex = i,
+                bandNorm = bandEnergiesNorm[i],
+                mode = mode,
+                intensityScale = intensityScale,
+                deEsserMode = deEsserMode,
+                modeRefShift = modeRefShift,
+            ) * intensityScale
             val clampedTarget = rawTarget.coerceIn(-maxScaledDelta, maxScaledDelta)
             val current = smoothedDelta[i]
             val isAttacking = abs(clampedTarget) > abs(current) || (clampedTarget * current < 0f)
@@ -430,8 +500,18 @@ class AdaptiveEqEngine {
         }
     }
 
-    private fun computePsychoacousticTargetDelta(bandIndex: Int, bandNorm: Float): Float {
-        val diff = sanitizeFinite(bandNorm) - PINK_REFERENCE_NORM[bandIndex]
+    private fun computePsychoacousticTargetDelta(
+        bandIndex: Int,
+        bandNorm: Float,
+        mode: PleasureMode,
+        intensityScale: Float,
+        deEsserMode: DeEsserMode,
+        modeRefShift: FloatArray = PleasureProfiles.adaptiveReferenceShiftFor(mode),
+    ): Float {
+        val shift = modeRefShift[bandIndex]
+        val effectiveRef = (PINK_REFERENCE_NORM[bandIndex] + shift * intensityScale)
+            .coerceIn(MIN_EFFECTIVE_REF_NORM, MAX_EFFECTIVE_REF_NORM)
+        val diff = sanitizeFinite(bandNorm) - effectiveRef
         val excess = when {
             diff > DEADBAND -> diff - DEADBAND
             diff < -DEADBAND -> diff + DEADBAND
@@ -439,14 +519,28 @@ class AdaptiveEqEngine {
         }
         if (excess == 0f) return 0f
 
-        val sensitivity = when (bandIndex) {
+        val baseSensitivity = when (bandIndex) {
             0, 1 -> if (excess < 0f) 9.5f else 8.5f
             2, 3 -> if (excess > 0f) 11.0f else 4.5f
             4, 5 -> if (excess > 0f) 5.0f else 4.0f
             6, 7 -> if (excess > 0f) 10.5f else 5.0f
             else -> if (excess < 0f) 8.5f else 7.5f
         }
-        return -excess * sensitivity
+        // Extra harshness damping in 2-8 kHz; band 9 (16 kHz) is intentionally excluded to preserve air.
+        val harshnessMultiplier = if (excess > 0f) {
+            when (deEsserMode) {
+                DeEsserMode.OFF -> 1.0f
+                DeEsserMode.GENTLE -> if (bandIndex == 7 || bandIndex == 8) 1.15f else 1.0f
+                DeEsserMode.STRONG -> when (bandIndex) {
+                    6 -> 1.10f
+                    7, 8 -> 1.35f
+                    else -> 1.0f
+                }
+            }
+        } else {
+            1.0f
+        }
+        return -excess * baseSensitivity * harshnessMultiplier
     }
 
     private fun updateDisplayBins(rawBins: FloatArray) {
@@ -470,37 +564,52 @@ class AdaptiveEqEngine {
 
     private fun normalizeZero(value: Float): Float = if (value == 0f) 0f else value
 
-    private companion object {
-        const val BAND_COUNT = 10
-        const val PRE_EQ_31_BAND_COUNT = 31
-        const val DISPLAY_BIN_COUNT = 36
-        const val MIN_EQ_DB = -15f
-        const val MAX_EQ_DB = 15f
-        const val MAX_ADAPTIVE_DELTA_DB = 5.5f
-        const val SILENT_RMS_THRESHOLD = 1e-4f
-        const val NOISE_FLOOR_FLATNESS_THRESHOLD = 0.72f
-        const val DEEMBED_DAMPING = 0.70f
-        const val DEEMBED_CLAMP_DB = 9f
-        const val TRACK_CHANGE_DECAY_FACTOR = 0.35f
-        const val SUBSONIC_20HZ_CUT_DB = -6.0f
-        const val SUBSONIC_25HZ_CUT_DB = -2.5f
-        const val DRM_FALLBACK_DELAY_MS = 1500L
-        const val LOUDNESS_VOLUME_THRESHOLD = 0.65f
-        const val MAX_LOW_LOUDNESS_DB = 4.0f
-        const val HEADROOM_ALLOWANCE_DB = 1.5f
-        const val MAX_CUSTOM_EXTRA_HEADROOM_DB = 6f
-        const val MAX_CHANNEL_BALANCE_ATTEN_DB = 12f
-        const val DEADBAND = 0.05f
-        const val DISPLAY_ATTACK_ALPHA = 0.50f
-        const val DISPLAY_RELEASE_ALPHA = 0.25f
-        const val ZERO_SNAP_EPSILON = 1e-4f
+    internal companion object {
+        private const val BAND_COUNT = 10
+        private const val PRE_EQ_31_BAND_COUNT = 31
+        private const val DISPLAY_BIN_COUNT = 36
+        private const val MIN_EQ_DB = -15f
+        private const val MAX_EQ_DB = 15f
+        private const val MAX_ADAPTIVE_DELTA_DB = 5.5f
+        private const val SILENT_RMS_THRESHOLD = 1e-4f
+        private const val NOISE_FLOOR_FLATNESS_THRESHOLD = 0.72f
+        private const val DEEMBED_DAMPING = 0.70f
+        private const val DEEMBED_CLAMP_DB = 9f
+        private const val TRACK_CHANGE_DECAY_FACTOR = 0.35f
+        private const val SUBSONIC_20HZ_CUT_DB = -6.0f
+        private const val SUBSONIC_25HZ_CUT_DB = -2.5f
+        private const val DRM_FALLBACK_DELAY_MS = 1500L
+        private const val LOUDNESS_VOLUME_THRESHOLD = 0.70f
+        private const val LOUDNESS_EXPONENT = 1.35f
+        private const val MAX_LOW_LOUDNESS_DB = 4.8f
+        private const val HEADROOM_ALLOWANCE_DB = 1.5f
+        private const val MAX_CUSTOM_EXTRA_HEADROOM_DB = 6f
+        private const val MAX_CHANNEL_BALANCE_ATTEN_DB = 12f
+        private const val DEADBAND = 0.05f
+        private const val MIN_EFFECTIVE_REF_NORM = 0.20f
+        private const val MAX_EFFECTIVE_REF_NORM = 0.65f
+        private const val MIN_BYPASS_MATCH_GAIN_DB = -9.0f
+        private const val BYPASS_MATCH_ACTIVATION_THRESHOLD_DB = -0.05f
+        private const val DISPLAY_ATTACK_ALPHA = 0.50f
+        private const val DISPLAY_RELEASE_ALPHA = 0.25f
+        private const val ZERO_SNAP_EPSILON = 1e-4f
 
-        val BASS_MACRO_WEIGHTS = floatArrayOf(1.0f, 0.70f, 0.35f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
-        val AIR_MACRO_WEIGHTS = floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0.35f, 0.70f, 1.0f)
-        val LOUDNESS_WEIGHTS = floatArrayOf(4.0f, 4.0f, 1.6f, 0.4f, 0f, 0f, 0.3f, 1.2f, 2.8f, 2.8f)
-        val PINK_REFERENCE_NORM = floatArrayOf(0.42f, 0.48f, 0.48f, 0.46f, 0.46f, 0.46f, 0.44f, 0.42f, 0.38f, 0.34f)
+        private val BASS_MACRO_WEIGHTS = floatArrayOf(1.0f, 0.70f, 0.35f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+        private val AIR_MACRO_WEIGHTS = floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0.35f, 0.70f, 1.0f)
+        private val LOUDNESS_WEIGHTS = floatArrayOf(4.8f, 4.4f, 2.0f, 0.6f, 0.0f, 0.0f, 0.2f, 1.0f, 2.4f, 2.2f)
+        private val PINK_REFERENCE_NORM = floatArrayOf(0.42f, 0.48f, 0.48f, 0.46f, 0.46f, 0.46f, 0.44f, 0.42f, 0.38f, 0.34f)
 
-        val EMPTY_SPECTRAL = SpectralFrame(
+        internal val PERCEPTUAL_LOUDNESS_WEIGHTS_31: FloatArray = run {
+            val raw = floatArrayOf(
+                0.10f, 0.14f, 0.19f, 0.25f, 0.32f, 0.40f, 0.47f, 0.54f, 0.65f, 0.76f,
+                0.86f, 0.96f, 1.05f, 1.14f, 1.25f, 1.31f, 1.37f, 1.42f, 1.45f, 1.47f,
+                1.47f, 1.45f, 1.40f, 1.33f, 1.18f, 1.03f, 0.88f, 0.72f, 0.57f, 0.43f, 0.31f,
+            )
+            val sum = raw.sum()
+            FloatArray(PRE_EQ_31_BAND_COUNT) { i -> raw[i] / sum }
+        }
+
+        private val EMPTY_SPECTRAL = SpectralFrame(
             bandEnergiesNorm = FloatArray(BAND_COUNT),
             displayBins36 = FloatArray(DISPLAY_BIN_COUNT),
             broadbandRms = 0f,
