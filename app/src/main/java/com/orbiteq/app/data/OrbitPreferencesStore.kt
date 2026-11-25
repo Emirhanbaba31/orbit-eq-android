@@ -25,7 +25,14 @@ import java.io.IOException
 
 private val Context.orbitDataStore: DataStore<Preferences> by preferencesDataStore(name = "orbit_eq_preferences")
 
-class OrbitPreferencesStore(context: Context) {
+internal interface OrbitPersistenceGateway {
+    val settingsFlow: Flow<OrbitSettings>
+    val historyFlow: Flow<List<TrackActivityEntry>>
+    suspend fun updateSettings(transform: (OrbitSettings) -> OrbitSettings)
+    suspend fun saveHistory(items: List<TrackActivityEntry>)
+}
+
+class OrbitPreferencesStore(context: Context) : OrbitPersistenceGateway {
 
     private val appContext = context.applicationContext
 
@@ -38,18 +45,18 @@ class OrbitPreferencesStore(context: Context) {
             }
         }
 
-    val settingsFlow: Flow<OrbitSettings> = preferencesFlow
+    override val settingsFlow: Flow<OrbitSettings> = preferencesFlow
         .map { prefs -> prefs.toOrbitSettings() }
         .distinctUntilChanged()
 
-    val historyFlow: Flow<List<TrackActivityEntry>> = preferencesFlow
+    override val historyFlow: Flow<List<TrackActivityEntry>> = preferencesFlow
         .map { prefs ->
             HistoryCodec.decodeHistory(prefs[Keys.RECENT_HISTORY_JSON])
                 .take(HistoryCodec.MAX_HISTORY_ITEMS)
         }
         .distinctUntilChanged()
 
-    suspend fun updateSettings(transform: (OrbitSettings) -> OrbitSettings) {
+    override suspend fun updateSettings(transform: (OrbitSettings) -> OrbitSettings) {
         appContext.orbitDataStore.edit { prefs ->
             val current = prefs.toOrbitSettings()
             val updated = transform(current)
@@ -74,7 +81,7 @@ class OrbitPreferencesStore(context: Context) {
         }
     }
 
-    suspend fun saveHistory(items: List<TrackActivityEntry>) {
+    override suspend fun saveHistory(items: List<TrackActivityEntry>) {
         val capped = items.take(HistoryCodec.MAX_HISTORY_ITEMS)
         appContext.orbitDataStore.edit { prefs ->
             prefs[Keys.RECENT_HISTORY_JSON] = HistoryCodec.encodeHistory(capped)

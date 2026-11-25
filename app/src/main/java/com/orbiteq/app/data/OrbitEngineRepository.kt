@@ -17,16 +17,19 @@ import com.orbiteq.app.model.PleasureMode
 import com.orbiteq.app.model.ResponseSpeed
 import com.orbiteq.app.model.SessionAttachmentMode
 import com.orbiteq.app.model.TrackActivityEntry
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
@@ -40,71 +43,205 @@ object OrbitEngineRepository {
     private const val MAX_MACRO_DB = 8.0f
     private const val SPECTRAL_TAG_STABLE_FRAMES = 5
 
+    private sealed interface SettingsCommand {
+        data class Transform(val fn: (OrbitSettings) -> OrbitSettings) : SettingsCommand
+        data class Barrier(val done: CompletableDeferred<Unit>) : SettingsCommand
+    }
+
+    private sealed interface HistoryCommand {
+        data object Sync : HistoryCommand
+        data class Barrier(val done: CompletableDeferred<Unit>) : HistoryCommand
+    }
+
+    private class PersistenceSession(
+        val gateway: OrbitPersistenceGateway,
+        dispatcher: CoroutineDispatcher,
+    ) {
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        val settingsChannel = Channel<SettingsCommand>(Channel.UNLIMITED)
+        val historyChannel = Channel<HistoryCommand>(Channel.UNLIMITED)
+    }
+
     private val initLock = Any()
     private val stateLock = Any()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val settingsWriteMutex = Mutex()
-    private val historyWriteMutex = Mutex()
     private val pendingSettingsWrites = AtomicInteger(0)
     private val pendingHistoryWrites = AtomicInteger(0)
 
     @Volatile
-    private var store: OrbitPreferencesStore? = null
+    private var session: PersistenceSession? = null
 
-    @Volatile
     private var initialHistoryLoaded = false
-
     private var stableTagCandidate: String? = null
     private var stableTagStreak: Int = 0
     private var lastSpectralTrackKey: String? = null
 
-    private val _uiState = MutableStateFlow(
-        recomputeDerivedState(
-            OrbitUiState(
-                settings = OrbitSettings(appRules = AppRuleResolver.defaultAppRules()),
-            ),
-        ),
-    )
+    private val _uiState = MutableStateFlow(defaultUiState())
     val uiState: StateFlow<OrbitUiState> = _uiState.asStateFlow()
 
     fun init(context: Context) {
-        if (store != null) return
-        val createdStore = synchronized(initLock) {
-            if (store != null) return
-            OrbitPreferencesStore(context.applicationContext).also { store = it }
+        if (session != null) return
+        val created = synchronized(initLock) {
+            if (session != null) return
+            createSession(OrbitPreferencesStore(context.applicationContext), Dispatchers.IO).also {
+                session = it
+            }
+        }
+        startSessionWorkers(created)
+    }
+
+    internal fun initForTesting(
+        gateway: OrbitPersistenceGateway,
+        dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    ) {
+        val created = synchronized(initLock) {
+            resetLocked(cancelExisting = true)
+            createSession(gateway, dispatcher).also { session = it }
+        }
+        startSessionWorkers(created)
+    }
+
+    internal fun resetForTesting() {
+        synchronized(initLock) {
+            resetLocked(cancelExisting = true)
+        }
+    }
+
+    internal suspend fun flushPersistenceForTesting() {
+        val activeSession = session ?: return
+        val settingsDone = CompletableDeferred<Unit>()
+        val historyDone = CompletableDeferred<Unit>()
+        activeSession.settingsChannel.trySend(SettingsCommand.Barrier(settingsDone))
+        activeSession.historyChannel.trySend(HistoryCommand.Barrier(historyDone))
+        settingsDone.await()
+        historyDone.await()
+    }
+
+    private fun resetLocked(cancelExisting: Boolean) {
+        val existing = session
+        session = null
+        if (cancelExisting && existing != null) {
+            existing.settingsChannel.close()
+            existing.historyChannel.close()
+            existing.scope.cancel()
+        }
+        synchronized(stateLock) {
+            pendingSettingsWrites.set(0)
+            pendingHistoryWrites.set(0)
+            initialHistoryLoaded = false
+            stableTagCandidate = null
+            stableTagStreak = 0
+            lastSpectralTrackKey = null
+            _uiState.value = defaultUiState()
+        }
+    }
+
+    private fun createSession(
+        gateway: OrbitPersistenceGateway,
+        dispatcher: CoroutineDispatcher,
+    ): PersistenceSession = PersistenceSession(gateway, dispatcher)
+
+    private fun startSessionWorkers(activeSession: PersistenceSession) {
+        activeSession.scope.launch {
+            for (command in activeSession.settingsChannel) {
+                when (command) {
+                    is SettingsCommand.Barrier -> command.done.complete(Unit)
+                    is SettingsCommand.Transform -> processSettingsTransform(activeSession.gateway, command.fn)
+                }
+            }
         }
 
-        scope.launch {
-            createdStore.settingsFlow.collect { persistedSettings ->
-                if (pendingSettingsWrites.get() == 0) {
-                    synchronized(stateLock) {
-                        if (pendingSettingsWrites.get() == 0) {
-                            _uiState.value = recomputeDerivedState(
-                                _uiState.value.copy(settings = persistedSettings),
-                            )
-                        }
+        activeSession.scope.launch {
+            for (command in activeSession.historyChannel) {
+                when (command) {
+                    is HistoryCommand.Barrier -> command.done.complete(Unit)
+                    is HistoryCommand.Sync -> processHistorySync(activeSession.gateway)
+                }
+            }
+        }
+
+        activeSession.scope.launch {
+            activeSession.gateway.settingsFlow.collect { persistedSettings ->
+                synchronized(stateLock) {
+                    if (pendingSettingsWrites.get() == 0) {
+                        _uiState.value = recomputeDerivedState(
+                            _uiState.value.copy(settings = persistedSettings),
+                        )
                     }
                 }
             }
         }
 
-        scope.launch {
-            createdStore.historyFlow.collect { persistedHistory ->
-                initialHistoryLoaded = true
-                if (pendingHistoryWrites.get() == 0) {
-                    synchronized(stateLock) {
-                        if (pendingHistoryWrites.get() == 0) {
-                            _uiState.value = _uiState.value.copy(recentActivity = persistedHistory)
-                        }
+        activeSession.scope.launch {
+            activeSession.gateway.historyFlow.collect { persistedHistory ->
+                synchronized(stateLock) {
+                    if (pendingHistoryWrites.get() == 0) {
+                        _uiState.value = _uiState.value.copy(recentActivity = persistedHistory)
+                        initialHistoryLoaded = true
                     }
                 }
             }
         }
     }
 
-    fun updateNowPlaying(info: NowPlayingInfo) {
-        var shouldPersistHistory = false
+    private suspend fun processSettingsTransform(
+        gateway: OrbitPersistenceGateway,
+        fn: (OrbitSettings) -> OrbitSettings,
+    ) {
+        var updatedSnapshot: OrbitSettings? = null
+        try {
+            gateway.updateSettings { current ->
+                fn(current).also { updatedSnapshot = it }
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            updatedSnapshot = null
+        } finally {
+            synchronized(stateLock) {
+                val remaining = pendingSettingsWrites.decrementAndGet().coerceAtLeast(0)
+                if (remaining == 0) {
+                    val snapshot = updatedSnapshot
+                    if (snapshot != null) {
+                        _uiState.value = recomputeDerivedState(
+                            _uiState.value.copy(settings = snapshot),
+                        )
+                    }
+                }
+            }
+        }
+    }
 
+    private suspend fun processHistorySync(gateway: OrbitPersistenceGateway) {
+        try {
+            val loaded = synchronized(stateLock) { initialHistoryLoaded }
+            val snapshotToSave = if (loaded) {
+                synchronized(stateLock) { _uiState.value.recentActivity }
+            } else {
+                val onDisk = gateway.historyFlow.first()
+                synchronized(stateLock) {
+                    val inMemory = _uiState.value.recentActivity
+                    var merged = onDisk
+                    for (item in inMemory.asReversed()) {
+                        merged = HistoryCodec.appendHistory(merged, item)
+                    }
+                    _uiState.value = _uiState.value.copy(recentActivity = merged)
+                    initialHistoryLoaded = true
+                    merged
+                }
+            }
+            gateway.saveHistory(snapshotToSave)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            // Keep worker alive for subsequent history updates.
+        } finally {
+            synchronized(stateLock) {
+                pendingHistoryWrites.decrementAndGet().coerceAtLeast(0)
+            }
+        }
+    }
+
+    fun updateNowPlaying(info: NowPlayingInfo) {
         synchronized(stateLock) {
             val prev = _uiState.value
             if (info == prev.nowPlaying) return
@@ -140,6 +277,7 @@ object OrbitEngineRepository {
                 ),
             )
 
+            var shouldPersistHistory = false
             if (info.isPlaying &&
                 newPkg != null &&
                 info.trackTitle.isNotBlank() &&
@@ -165,10 +303,9 @@ object OrbitEngineRepository {
             }
 
             _uiState.value = nextState
-        }
-
-        if (shouldPersistHistory) {
-            persistHistoryUpdate()
+            if (shouldPersistHistory) {
+                enqueueHistorySyncLocked()
+            }
         }
     }
 
@@ -181,11 +318,10 @@ object OrbitEngineRepository {
     }
 
     fun updateTelemetry(telemetry: LiveAudioTelemetry) {
-        var shouldPersistHistory = false
-
         synchronized(stateLock) {
             val prev = _uiState.value
             var nextHistory = prev.recentActivity
+            var shouldPersistHistory = false
 
             val currentKey = trackKeyOrNull(prev.nowPlaying.packageName, prev.nowPlaying.trackTitle)
             val candidateTag = telemetry.dominantSpectralTag.trim()
@@ -221,10 +357,9 @@ object OrbitEngineRepository {
                 telemetry = telemetry,
                 recentActivity = nextHistory,
             )
-        }
-
-        if (shouldPersistHistory) {
-            persistHistoryUpdate()
+            if (shouldPersistHistory) {
+                enqueueHistorySyncLocked()
+            }
         }
     }
 
@@ -237,8 +372,6 @@ object OrbitEngineRepository {
     }
 
     fun selectModeManually(mode: PleasureMode) {
-        var settingsToPersist: ((OrbitSettings) -> OrbitSettings)? = null
-
         synchronized(stateLock) {
             val prev = _uiState.value
             val pkg = normalizePkg(prev.nowPlaying.packageName)
@@ -257,7 +390,7 @@ object OrbitEngineRepository {
                         manualOverrideMode = mode,
                     ),
                 )
-                settingsToPersist = { current ->
+                enqueueSettingsTransformLocked { current ->
                     current.copy(
                         selectedMode = mode,
                         deviceDefaultModes = current.deviceDefaultModes + (deviceKey to mode),
@@ -269,14 +402,9 @@ object OrbitEngineRepository {
                 )
             }
         }
-
-        settingsToPersist?.let { persistSettingsTransform(it) }
     }
 
     fun saveCurrentModeForActiveApp() {
-        var pkgToSave: String? = null
-        var ruleToSave: AppRule? = null
-
         synchronized(stateLock) {
             val prev = _uiState.value
             val pkg = normalizePkg(prev.nowPlaying.packageName) ?: return
@@ -297,15 +425,8 @@ object OrbitEngineRepository {
                     manualOverrideMode = null,
                 ),
             )
-            pkgToSave = pkg
-            ruleToSave = newRule
-        }
-
-        val savedPkg = pkgToSave
-        val savedRule = ruleToSave
-        if (savedPkg != null && savedRule != null) {
-            persistSettingsTransform { current ->
-                current.copy(appRules = removeNormalizedKey(current.appRules, savedPkg) + (savedPkg to savedRule))
+            enqueueSettingsTransformLocked { current ->
+                current.copy(appRules = removeNormalizedKey(current.appRules, pkg) + (pkg to newRule))
             }
         }
     }
@@ -357,7 +478,6 @@ object OrbitEngineRepository {
         val trimmedName = name.trim()
         if (trimmedName.isEmpty()) return
 
-        var createdPreset: CustomPreset? = null
         synchronized(stateLock) {
             val prev = _uiState.value
             val preset = CustomPreset(
@@ -373,26 +493,27 @@ object OrbitEngineRepository {
                 customPresets = prev.settings.customPresets + preset,
             )
             _uiState.value = prev.copy(settings = nextSettings)
-            createdPreset = preset
-        }
-
-        val preset = createdPreset ?: return
-        persistSettingsTransform { current ->
-            current.copy(customPresets = current.customPresets + preset)
+            enqueueSettingsTransformLocked { current ->
+                current.copy(customPresets = current.customPresets + preset)
+            }
         }
     }
 
     fun applyCustomPreset(presetId: String) {
-        var matchedPreset: CustomPreset? = null
         synchronized(stateLock) {
             val prev = _uiState.value
             val preset = prev.settings.customPresets.firstOrNull { it.id == presetId } ?: return
+            val clampedIntensity = preset.intensity.coerceIn(0, 100)
+            val clampedBass = sanitizeAndClamp(preset.bassMacroDb, MIN_MACRO_DB, MAX_MACRO_DB)
+            val clampedAir = sanitizeAndClamp(preset.airMacroDb, MIN_MACRO_DB, MAX_MACRO_DB)
+            val normalizedTrims = HistoryCodec.normalizeTrims(preset.trimsDb)
+
             val nextSettings = prev.settings.copy(
                 selectedMode = preset.mode,
-                intensityPercent = preset.intensity.coerceIn(0, 100),
-                bassMacroDb = sanitizeAndClamp(preset.bassMacroDb, MIN_MACRO_DB, MAX_MACRO_DB),
-                airMacroDb = sanitizeAndClamp(preset.airMacroDb, MIN_MACRO_DB, MAX_MACRO_DB),
-                manualTrimsDb = HistoryCodec.normalizeTrims(preset.trimsDb),
+                intensityPercent = clampedIntensity,
+                bassMacroDb = clampedBass,
+                airMacroDb = clampedAir,
+                manualTrimsDb = normalizedTrims,
             )
             _uiState.value = recomputeDerivedState(
                 prev.copy(
@@ -400,18 +521,15 @@ object OrbitEngineRepository {
                     manualOverrideMode = preset.mode,
                 ),
             )
-            matchedPreset = preset
-        }
-
-        val preset = matchedPreset ?: return
-        persistSettingsTransform { current ->
-            current.copy(
-                selectedMode = preset.mode,
-                intensityPercent = preset.intensity.coerceIn(0, 100),
-                bassMacroDb = sanitizeAndClamp(preset.bassMacroDb, MIN_MACRO_DB, MAX_MACRO_DB),
-                airMacroDb = sanitizeAndClamp(preset.airMacroDb, MIN_MACRO_DB, MAX_MACRO_DB),
-                manualTrimsDb = HistoryCodec.normalizeTrims(preset.trimsDb),
-            )
+            enqueueSettingsTransformLocked { current ->
+                current.copy(
+                    selectedMode = preset.mode,
+                    intensityPercent = clampedIntensity,
+                    bassMacroDb = clampedBass,
+                    airMacroDb = clampedAir,
+                    manualTrimsDb = normalizedTrims,
+                )
+            }
         }
     }
 
@@ -422,7 +540,6 @@ object OrbitEngineRepository {
     }
 
     fun setHeadphoneProfileForCurrentDevice(profile: HeadphoneProfile) {
-        var deviceKey: String? = null
         synchronized(stateLock) {
             val prev = _uiState.value
             val key = currentDeviceKey(prev.connectedDevice)
@@ -432,14 +549,11 @@ object OrbitEngineRepository {
                     settings = prev.settings.copy(deviceProfiles = nextProfiles),
                 ),
             )
-            deviceKey = key
-        }
-
-        val key = deviceKey ?: return
-        persistSettingsTransform { current ->
-            current.copy(
-                deviceProfiles = removeNormalizedKey(current.deviceProfiles, key) + (key to profile),
-            )
+            enqueueSettingsTransformLocked { current ->
+                current.copy(
+                    deviceProfiles = removeNormalizedKey(current.deviceProfiles, key) + (key to profile),
+                )
+            }
         }
     }
 
@@ -461,12 +575,11 @@ object OrbitEngineRepository {
                     manualOverrideMode = nextManualOverride,
                 ),
             )
-        }
-
-        persistSettingsTransform { current ->
-            current.copy(
-                appRules = removeNormalizedKey(current.appRules, normalizedPkg) + (normalizedPkg to normalizedRule),
-            )
+            enqueueSettingsTransformLocked { current ->
+                current.copy(
+                    appRules = removeNormalizedKey(current.appRules, normalizedPkg) + (normalizedPkg to normalizedRule),
+                )
+            }
         }
     }
 
@@ -481,10 +594,9 @@ object OrbitEngineRepository {
                     settings = prev.settings.copy(appRules = nextRules),
                 ),
             )
-        }
-
-        persistSettingsTransform { current ->
-            current.copy(appRules = removeNormalizedKey(current.appRules, normalizedPkg))
+            enqueueSettingsTransformLocked { current ->
+                current.copy(appRules = removeNormalizedKey(current.appRules, normalizedPkg))
+            }
         }
     }
 
@@ -503,10 +615,9 @@ object OrbitEngineRepository {
                     manualOverrideMode = nextManualOverride,
                 ),
             )
-        }
-
-        persistSettingsTransform { current ->
-            current.copy(pinnedTracks = togglePinnedMap(current.pinnedTracks, key, mode))
+            enqueueSettingsTransformLocked { current ->
+                current.copy(pinnedTracks = togglePinnedMap(current.pinnedTracks, key, mode))
+            }
         }
     }
 
@@ -527,52 +638,32 @@ object OrbitEngineRepository {
             val prev = _uiState.value
             val nextSettings = transform(prev.settings)
             _uiState.value = recomputeDerivedState(prev.copy(settings = nextSettings))
+            enqueueSettingsTransformLocked(transform)
         }
-        persistSettingsTransform(transform)
     }
 
-    private fun persistSettingsTransform(transform: (OrbitSettings) -> OrbitSettings) {
-        val activeStore = store ?: return
+    private fun enqueueSettingsTransformLocked(transform: (OrbitSettings) -> OrbitSettings) {
+        val activeSession = session ?: return
         pendingSettingsWrites.incrementAndGet()
-        scope.launch {
-            try {
-                settingsWriteMutex.withLock {
-                    activeStore.updateSettings(transform)
-                }
-            } finally {
-                pendingSettingsWrites.decrementAndGet()
-            }
+        if (!activeSession.settingsChannel.trySend(SettingsCommand.Transform(transform)).isSuccess) {
+            pendingSettingsWrites.decrementAndGet().coerceAtLeast(0)
         }
     }
 
-    private fun persistHistoryUpdate() {
-        val activeStore = store ?: return
+    private fun enqueueHistorySyncLocked() {
+        val activeSession = session ?: return
         pendingHistoryWrites.incrementAndGet()
-        scope.launch {
-            try {
-                historyWriteMutex.withLock {
-                    val snapshotToSave = if (initialHistoryLoaded) {
-                        synchronized(stateLock) { _uiState.value.recentActivity }
-                    } else {
-                        val onDisk = activeStore.historyFlow.first()
-                        initialHistoryLoaded = true
-                        synchronized(stateLock) {
-                            val inMemory = _uiState.value.recentActivity
-                            var merged = onDisk
-                            for (item in inMemory.asReversed()) {
-                                merged = HistoryCodec.appendHistory(merged, item)
-                            }
-                            _uiState.value = _uiState.value.copy(recentActivity = merged)
-                            merged
-                        }
-                    }
-                    activeStore.saveHistory(snapshotToSave)
-                }
-            } finally {
-                pendingHistoryWrites.decrementAndGet()
-            }
+        if (!activeSession.historyChannel.trySend(HistoryCommand.Sync).isSuccess) {
+            pendingHistoryWrites.decrementAndGet().coerceAtLeast(0)
         }
     }
+
+    private fun defaultUiState(): OrbitUiState =
+        recomputeDerivedState(
+            OrbitUiState(
+                settings = OrbitSettings(appRules = AppRuleResolver.defaultAppRules()),
+            ),
+        )
 
     private fun recomputeDerivedState(state: OrbitUiState): OrbitUiState {
         val deviceNameForProfile = if (state.connectedDevice.name.isBlank() && state.connectedDevice.isSoundcoreQ30) {
