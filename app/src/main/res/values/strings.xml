@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ORBIT EQ</string>
+
+    <!-- Bottom Navigation -->
+    <string name="nav_studio">Studio</string>
+    <string name="nav_mixer">10-Band</string>
+    <string name="nav_activity">Activity</string>
+
+    <!-- Now Playing Pill & Controls -->
+    <string name="now_playing_idle_title">Waiting for audio stream</string>
+    <string name="now_playing_idle_sub">Play Spotify, YouTube Music or any app</string>
+    <string name="device_speaker_default">Phone Speaker</string>
+    <string name="device_bluetooth_default">Bluetooth Audio</string>
+    <string name="ab_bypass_label">A/B</string>
+    <string name="ab_bypass_cd">Toggle A/B bypass comparison</string>
+    <string name="power_toggle_cd">Toggle ORBIT EQ engine power</string>
+    <string name="save_for_app_chip">Save for App</string>
+    <string name="mode_source_manual">Session Override</string>
+    <string name="mode_source_pinned">Pinned Track</string>
+    <string name="mode_source_app">App Rule</string>
+    <string name="mode_source_device">Device Default</string>
+    <string name="mode_source_global">Global Default</string>
+
+    <!-- Hero Canvas HUD -->
+    <string name="hud_status_idle">ENGINE · IDLE</string>
+    <string name="hud_status_fft_locked">AUTO FFT · LOCKED</string>
+    <string name="hud_status_profile_fallback">PROFILE FALLBACK</string>
+    <string name="hud_status_bypassed">A/B BYPASSED</string>
+    <string name="hud_loud_label">LOUD</string>
+    <string name="hud_loud_off">OFF</string>
+    <string name="hud_mode_label">MODE</string>
+    <string name="hud_preamp_label">PREAMP</string>
+    <string name="hud_limiter_badge">LIM -0.5 dB</string>
+
+    <!-- Studio & Pleasure Modes -->
+    <string name="studio_section_modes">PLEASURE MODES</string>
+    <string name="mode_nova_name">NOVA</string>
+    <string name="mode_nova_tagline">Wide, vibrant and clean balance</string>
+    <string name="mode_gravity_name">GRAVITY</string>
+    <string name="mode_gravity_tagline">Deep sub-bass + tight punch</string>
+    <string name="mode_horizon_name">HORIZON</string>
+    <string name="mode_horizon_tagline">Airy stage &amp; crystal treble detail</string>
+    <string name="mode_eclipse_name">ECLIPSE</string>
+    <string name="mode_eclipse_tagline">Warm, velvety night listening</string>
+    <string name="mode_comms_name">COMMS</string>
+    <string name="mode_comms_tagline">Crisp vocal &amp; podcast clarity</string>
+    <string name="dial_sub_label">AUTO GAIN</string>
+    <string name="dial_caption">Adaptive Intensity</string>
+    <string name="macro_sub_impact">Sub Impact</string>
+    <string name="macro_starlight_air">Starlight Air</string>
+    <string name="toggle_dynamic_loudness">Dynamic Loudness</string>
+    <string name="toggle_dynamic_loudness_sub">Fullness at low volume</string>
+
+    <!-- 10-Band Mixer & DSP Rack -->
+    <string name="mixer_section_faders">10-BAND LIVE + MANUAL TRIM</string>
+    <string name="mixer_reset_trims">Reset</string>
+    <string name="dsp_limiter_title">True-Peak Limiter</string>
+    <string name="dsp_limiter_desc">Zero-clipping protection</string>
+    <string name="dsp_limiter_ceiling">CEILING -0.5 dB</string>
+    <string name="dsp_mbc_title">Multi-Band Punch</string>
+    <string name="dsp_mbc_desc">Dynamic bass-treble glue</string>
+    <string name="dsp_mbc_active">MBC · ACTIVE</string>
+    <string name="dsp_mbc_off">MBC · OFF</string>
+    <string name="dsp_speed_title">RESPONSE SPEED</string>
+    <string name="dsp_speed_hint">Smooth transition</string>
+    <string name="speed_chill">CHILL</string>
+    <string name="speed_balanced">BALANCED</string>
+    <string name="speed_reactive">REACTIVE</string>
+    <string name="presets_section_title">CUSTOM PRESETS</string>
+    <string name="preset_save_btn">Save Current</string>
+    <string name="preset_name_hint">Preset name</string>
+    <string name="preset_dialog_title">Save Custom Preset</string>
+    <string name="preset_dialog_save">Save</string>
+    <string name="preset_dialog_cancel">Cancel</string>
+    <string name="preset_empty">No custom presets saved yet</string>
+
+    <!-- Activity, Q30 Synergy, Permissions & Rules -->
+    <string name="activity_telemetry_title">LIVE AUDIO ENGINE TELEMETRY</string>
+    <string name="telemetry_session_fmt">SESSION #%d</string>
+    <string name="telemetry_session_global">GLOBAL MIX (#0)</string>
+    <string name="telemetry_backend_dp">DynamicsProcessing · 10-Band</string>
+    <string name="telemetry_backend_dp_sub">PreEQ + MBC + PostEQ + True-Peak Limiter</string>
+    <string name="telemetry_backend_legacy">Legacy Equalizer · Fallback</string>
+    <string name="telemetry_backend_legacy_sub">System Equalizer + LoudnessEnhancer</string>
+    <string name="telemetry_backend_none">DSP Engine Standby</string>
+    <string name="telemetry_backend_none_sub">Enable power to attach audio pipeline</string>
+    <string name="telemetry_fft_title">Visualizer FFT Analysis</string>
+    <string name="telemetry_fft_sub_live">Real-time psychoacoustic spectral tracking</string>
+    <string name="telemetry_fft_sub_fallback">Protected DRM/background stream — profile curve active</string>
+    <string name="telemetry_session_mode_label">Audio Session Attachment</string>
+    <string name="session_mode_auto">Auto (Smart)</string>
+    <string name="session_mode_global">Global Mix</string>
+
+    <string name="headphone_profile_title">HEADPHONE COMPENSATION</string>
+    <string name="profile_q30_clean_base">Q30 Clean Base</string>
+    <string name="profile_q30_clean_base_desc">Recommended when Soundcore app EQ is Flat / Acoustic</string>
+    <string name="profile_q30_safe_stack">Q30 Safe Stack</string>
+    <string name="profile_q30_safe_stack_desc">Keep your Soundcore preset + extra -2.0 dB headroom</string>
+    <string name="profile_flat_generic">Flat / Generic</string>
+    <string name="profile_flat_generic_desc">Neutral reference without headphone curve</string>
+    <string name="profile_phone_speaker">Phone Speaker Safe</string>
+    <string name="profile_phone_speaker_desc">Protects phone speakers from sub-bass distortion</string>
+
+    <string name="q30_tip_title">Soundcore Life Q30 Synergy</string>
+    <string name="q30_tip_body">The Soundcore app writes EQ directly to Q30 hardware via BLE, so it never conflicts with ORBIT EQ. Set Soundcore EQ to Acoustic/Flat for Q30 Clean Base, or switch to Q30 Safe Stack if you keep a Soundcore bass preset active.</string>
+    <string name="q30_tip_dismiss">Got it</string>
+
+    <string name="setup_section_title">ENGINE SETUP &amp; PERMISSIONS</string>
+    <string name="setup_fft_title">Audio Spectrum Capture (FFT)</string>
+    <string name="setup_fft_desc">Required by Android Visualizer to read playback output spectrum. ORBIT EQ never records voice or microphone input. Note: Android displays the green status-bar dot while live FFT is active.</string>
+    <string name="setup_notif_listener_title">Music Activity Access</string>
+    <string name="setup_notif_listener_desc">Detects active media app, track title, and artist for per-app rules and song pinning.</string>
+    <string name="setup_notifications_title">Engine Status Notification</string>
+    <string name="setup_notifications_desc">Keeps real-time EQ running reliably in the background with quick A/B Bypass controls.</string>
+    <string name="setup_battery_title">Unrestricted Background Battery</string>
+    <string name="setup_battery_desc">Prevents Android from pausing ORBIT EQ when screen turns off.</string>
+    <string name="status_granted">GRANTED</string>
+    <string name="status_required">REQUIRED</string>
+    <string name="status_exempt">UNRESTRICTED</string>
+    <string name="action_grant">Grant</string>
+    <string name="action_open_settings">Open Settings</string>
+
+    <string name="rules_section_title">APP &amp; DEVICE RULES</string>
+    <string name="rule_action_bypass">BYPASS</string>
+    <string name="pinned_tracks_title">PINNED TRACKS</string>
+    <string name="pinned_unpin_cd">Unpin track mode</string>
+    <string name="activity_recent_title">RECENT MUSIC ACTIVITY</string>
+    <string name="activity_empty">Play a track to see live spectral tags and quick mode pinning.</string>
+    <string name="pin_track_cd">Pin current mode to this track</string>
+
+    <string name="appearance_section_title">VISUAL THEME</string>
+    <string name="theme_deep_space">Deep Space HUD</string>
+    <string name="theme_deep_space_desc">Void black, starfield &amp; ion cyan telemetry</string>
+    <string name="theme_lunar_mono">Lunar Monochrome</string>
+    <string name="theme_lunar_mono_desc">Pure OLED black &amp; white, cobalt live curve only</string>
+
+    <!-- Foreground Service Notification -->
+    <string name="notif_channel_name">ORBIT EQ Audio Engine</string>
+    <string name="notif_channel_desc">Keeps real-time Auto-EQ active during music playback</string>
+    <string name="notif_action_bypass">A/B Bypass</string>
+    <string name="notif_action_pause">Pause</string>
+    <string name="notif_action_resume">Resume</string>
+    <string name="notif_action_stop">Stop</string>
+    <string name="notif_title_fmt">%1$s · %2$s</string>
+    <string name="notif_state_live">AUTO FFT</string>
+    <string name="notif_state_fallback">PROFILE FALLBACK</string>
+    <string name="notif_state_bypassed">BYPASSED</string>
+
+    <!-- Spectral Tags -->
+    <string name="spectral_balanced">Balanced</string>
+    <string name="spectral_sub_heavy">Sub-Heavy</string>
+    <string name="spectral_wide_stage">Wide Stage</string>
+    <string name="spectral_vocal">Vocal</string>
+    <string name="spectral_warm">Warm</string>
+</resources>

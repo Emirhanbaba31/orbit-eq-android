@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ORBIT EQ</string>
+
+    <!-- Bottom Navigation -->
+    <string name="nav_studio">Studio</string>
+    <string name="nav_mixer">10-Bant</string>
+    <string name="nav_activity">Aktivite</string>
+
+    <!-- Now Playing Pill & Controls -->
+    <string name="now_playing_idle_title">Ses akışı bekleniyor</string>
+    <string name="now_playing_idle_sub">Spotify, YouTube Music veya bir medya açın</string>
+    <string name="device_speaker_default">Telefon Hoparlörü</string>
+    <string name="device_bluetooth_default">Bluetooth Ses</string>
+    <string name="ab_bypass_label">A/B</string>
+    <string name="ab_bypass_cd">A/B önce-sonra karşılaştırmasını aç veya kapat</string>
+    <string name="power_toggle_cd">ORBIT EQ motor gücünü aç veya kapat</string>
+    <string name="save_for_app_chip">Uygulamaya Kaydet</string>
+    <string name="mode_source_manual">Geçici Seçim</string>
+    <string name="mode_source_pinned">Sabitlenmiş Parça</string>
+    <string name="mode_source_app">Uygulama Kuralı</string>
+    <string name="mode_source_device">Cihaz Varsayılanı</string>
+    <string name="mode_source_global">Genel Varsayılan</string>
+
+    <!-- Hero Canvas HUD -->
+    <string name="hud_status_idle">MOTOR · BEKLEMEDE</string>
+    <string name="hud_status_fft_locked">AUTO FFT · LOCKED</string>
+    <string name="hud_status_profile_fallback">PROFILE FALLBACK</string>
+    <string name="hud_status_bypassed">A/B BYPASS</string>
+    <string name="hud_loud_label">LOUD</string>
+    <string name="hud_loud_off">KAPALI</string>
+    <string name="hud_mode_label">MOD</string>
+    <string name="hud_preamp_label">PREAMP</string>
+    <string name="hud_limiter_badge">LIM -0.5 dB</string>
+
+    <!-- Studio & Pleasure Modes -->
+    <string name="studio_section_modes">HAZ MODLARI</string>
+    <string name="mode_nova_name">NOVA</string>
+    <string name="mode_nova_tagline">Geniş, canlı ve temiz denge</string>
+    <string name="mode_gravity_name">GRAVITY</string>
+    <string name="mode_gravity_tagline">Derin sub-bass + sıkı vuruş</string>
+    <string name="mode_horizon_name">HORIZON</string>
+    <string name="mode_horizon_tagline">Ferah sahne &amp; kristal tiz detayı</string>
+    <string name="mode_eclipse_name">ECLIPSE</string>
+    <string name="mode_eclipse_tagline">Sıcak, kadifemsi gece dinlemesi</string>
+    <string name="mode_comms_name">COMMS</string>
+    <string name="mode_comms_tagline">Net vokal &amp; podcast berraklığı</string>
+    <string name="dial_sub_label">AUTO GAIN</string>
+    <string name="dial_caption">Uyum Yoğunluğu</string>
+    <string name="macro_sub_impact">Sub Impact</string>
+    <string name="macro_starlight_air">Starlight Air</string>
+    <string name="toggle_dynamic_loudness">Dinamik Loudness</string>
+    <string name="toggle_dynamic_loudness_sub">Kısık seste dolgunluk</string>
+
+    <!-- 10-Band Mixer & DSP Rack -->
+    <string name="mixer_section_faders">10-BANT CANLI + MANUEL İNCE AYAR</string>
+    <string name="mixer_reset_trims">Sıfırla</string>
+    <string name="dsp_limiter_title">True-Peak Limiter</string>
+    <string name="dsp_limiter_desc">Patlama/cızırtı engelleme</string>
+    <string name="dsp_limiter_ceiling">CEILING -0.5 dB</string>
+    <string name="dsp_mbc_title">Multi-Band Punch</string>
+    <string name="dsp_mbc_desc">Dinamik bas-tiz sıkılaştırma</string>
+    <string name="dsp_mbc_active">MBC · AKTİF</string>
+    <string name="dsp_mbc_off">MBC · KAPALI</string>
+    <string name="dsp_speed_title">MOTOR TEPKİ HIZI</string>
+    <string name="dsp_speed_hint">Yumuşak geçiş</string>
+    <string name="speed_chill">CHILL</string>
+    <string name="speed_balanced">BALANCED</string>
+    <string name="speed_reactive">REACTIVE</string>
+    <string name="presets_section_title">ÖZEL ÖN AYARLAR</string>
+    <string name="preset_save_btn">Mevcudu Kaydet</string>
+    <string name="preset_name_hint">Ön ayar adı</string>
+    <string name="preset_dialog_title">Özel Ön Ayar Kaydet</string>
+    <string name="preset_dialog_save">Kaydet</string>
+    <string name="preset_dialog_cancel">İptal</string>
+    <string name="preset_empty">Henüz kayıtlı özel ön ayar yok</string>
+
+    <!-- Activity, Q30 Synergy, Permissions & Rules -->
+    <string name="activity_telemetry_title">CANLI SES MOTORU TELEMETRİSİ</string>
+    <string name="telemetry_session_fmt">OTURUM #%d</string>
+    <string name="telemetry_session_global">GLOBAL MİKS (#0)</string>
+    <string name="telemetry_backend_dp">DynamicsProcessing · 10-Bant</string>
+    <string name="telemetry_backend_dp_sub">PreEQ + MBC + PostEQ + True-Peak Limiter</string>
+    <string name="telemetry_backend_legacy">Legacy Equalizer · Yedek Mod</string>
+    <string name="telemetry_backend_legacy_sub">Sistem Ekolayzırı + LoudnessEnhancer</string>
+    <string name="telemetry_backend_none">DSP Motoru Beklemede</string>
+    <string name="telemetry_backend_none_sub">Ses hattını bağlamak için motoru açın</string>
+    <string name="telemetry_fft_title">Visualizer FFT Analizi</string>
+    <string name="telemetry_fft_sub_live">Gerçek zamanlı psikoakustik spektral izleme</string>
+    <string name="telemetry_fft_sub_fallback">DRM veya arka plan korumalı akış — profil eğrisi aktif</string>
+    <string name="telemetry_session_mode_label">Ses Oturumu Bağlantısı</string>
+    <string name="session_mode_auto">Otomatik (Akıllı)</string>
+    <string name="session_mode_global">Global Miks</string>
+
+    <string name="headphone_profile_title">KULAKLIK AKUSTİK TELAFİSİ</string>
+    <string name="profile_q30_clean_base">Q30 Clean Base</string>
+    <string name="profile_q30_clean_base_desc">Soundcore uygulaması Flat / Acoustic iken önerilir</string>
+    <string name="profile_q30_safe_stack">Q30 Safe Stack</string>
+    <string name="profile_q30_safe_stack_desc">Soundcore ön ayarınızı korur + ekstra -2.0 dB headroom</string>
+    <string name="profile_flat_generic">Flat / Genel</string>
+    <string name="profile_flat_generic_desc">Kulaklık telafisi olmadan nötr referans</string>
+    <string name="profile_phone_speaker">Telefon Hoparlörü Korumalı</string>
+    <string name="profile_phone_speaker_desc">Hoparlörü sub-bass bozulmasından korur</string>
+
+    <string name="q30_tip_title">Soundcore Life Q30 Uyumu</string>
+    <string name="q30_tip_body">Soundcore uygulaması EQ ayarını doğrudan Q30 kulaklığın çipine BLE ile yazar; bu yüzden ORBIT EQ ile çakışmaz. En temiz sahne için Soundcore uygulamasını Acoustic/Flat seçip Q30 Clean Base kullanın; kendi Soundcore ayarınızı koruyacaksanız Q30 Safe Stack seçin.</string>
+    <string name="q30_tip_dismiss">Anladım</string>
+
+    <string name="setup_section_title">MOTOR KURULUMU VE İZİNLER</string>
+    <string name="setup_fft_title">Ses Spektrum Analizi (FFT)</string>
+    <string name="setup_fft_desc">Android Visualizer ile çalan sesin spektrumunu okumak için gereklidir. ORBIT EQ asla sesinizi veya mikrofonu kaydetmez. Not: Canlı FFT etkinken Android durum çubuğunda sistem yeşil noktasını gösterir.</string>
+    <string name="setup_notif_listener_title">Müzik Aktivitesi Erişimi</string>
+    <string name="setup_notif_listener_desc">Uygulama kuralları ve şarkı sabitleme için aktif medya uygulamasını ve parça bilgisini okur.</string>
+    <string name="setup_notifications_title">Motor Durum Bildirimi</string>
+    <string name="setup_notifications_desc">Gerçek zamanlı EQ motorunun arka planda kesintisiz çalışmasını ve bildirimden A/B kontrolünü sağlar.</string>
+    <string name="setup_battery_title">Arka Plan Pil Kısıtlamasını Kaldır</string>
+    <string name="setup_battery_desc">Ekran kapandığında Android\'in ORBIT EQ servisini durdurmasını önler.</string>
+    <string name="status_granted">VERİLDİ</string>
+    <string name="status_required">GEREKLİ</string>
+    <string name="status_exempt">KISITSIZ</string>
+    <string name="action_grant">İzin Ver</string>
+    <string name="action_open_settings">Ayarları Aç</string>
+
+    <string name="rules_section_title">UYGULAMA VE CİHAZ KURALLARI</string>
+    <string name="rule_action_bypass">HARİÇ TUT</string>
+    <string name="pinned_tracks_title">SABİTLENMİŞ PARÇALAR</string>
+    <string name="pinned_unpin_cd">Parça sabitlemesini kaldır</string>
+    <string name="activity_recent_title">SON MÜZİK ETKİNLİĞİ</string>
+    <string name="activity_empty">Canlı spektral etiketleri ve hızlı sabitlemeyi görmek için bir parça oynatın.</string>
+    <string name="pin_track_cd">Bu parçaya mevcut modu sabitle</string>
+
+    <string name="appearance_section_title">GÖRÜNÜM TEMASI</string>
+    <string name="theme_deep_space">Deep Space HUD</string>
+    <string name="theme_deep_space_desc">Derin uzay siyahı, yıldız alanı ve iyon mavisi</string>
+    <string name="theme_lunar_mono">Lunar Monochrome</string>
+    <string name="theme_lunar_mono_desc">Saf OLED siyah-beyaz, yalnızca canlı eğride kobalt mavi</string>
+
+    <!-- Foreground Service Notification -->
+    <string name="notif_channel_name">ORBIT EQ Ses Motoru</string>
+    <string name="notif_channel_desc">Müzik çalarken gerçek zamanlı Auto-EQ motorunu aktif tutar</string>
+    <string name="notif_action_bypass">A/B Bypass</string>
+    <string name="notif_action_pause">Duraklat</string>
+    <string name="notif_action_resume">Devam Et</string>
+    <string name="notif_action_stop">Durdur</string>
+    <string name="notif_title_fmt">%1$s · %2$s</string>
+    <string name="notif_state_live">AUTO FFT</string>
+    <string name="notif_state_fallback">PROFILE FALLBACK</string>
+    <string name="notif_state_bypassed">BYPASS</string>
+
+    <!-- Spectral Tags -->
+    <string name="spectral_balanced">Dengeli</string>
+    <string name="spectral_sub_heavy">Sub-Bass Yoğun</string>
+    <string name="spectral_wide_stage">Geniş Sahne</string>
+    <string name="spectral_vocal">Vokal</string>
+    <string name="spectral_warm">Sıcak</string>
+</resources>
