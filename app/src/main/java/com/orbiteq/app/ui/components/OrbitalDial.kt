@@ -3,7 +3,6 @@ package com.orbiteq.app.ui.components
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -85,7 +85,7 @@ fun OrbitalDial(
     val clampedPercent = intensityPercent.coerceIn(0, 100)
     var isDragging by remember { mutableStateOf(false) }
 
-    val animatedPercent by animateFloatAsState(
+    val animatedPercentState = animateFloatAsState(
         targetValue = clampedPercent.toFloat(),
         animationSpec = if (isDragging || reducedMotion) snap() else tween(durationMillis = 150),
         label = "orbitalDialPercent",
@@ -99,6 +99,9 @@ fun OrbitalDial(
     val dialSubLabel = stringResource(R.string.dial_sub_label)
     val activeAccent = if (enabled) colors.ionAccent else colors.textMuted
     val secondaryAccent = if (enabled) colors.primaryAccent else colors.textMuted
+    val colorsState = rememberUpdatedState(colors)
+    val activeAccentState = rememberUpdatedState(activeAccent)
+    val secondaryAccentState = rememberUpdatedState(secondaryAccent)
 
     Column(
         modifier = modifier,
@@ -193,126 +196,142 @@ fun OrbitalDial(
                 },
             contentAlignment = Alignment.Center,
         ) {
-            Canvas(modifier = Modifier.size(184.dp)) {
-                val diameter = size.minDimension
-                val center = Offset(size.width / 2f, size.height / 2f)
-                val arcStrokePx = 9.dp.toPx()
-                val ringRadius = diameter * 0.37f
-                val tickOuterR = diameter * 0.46f
-                val tickInnerMajorR = diameter * 0.415f
-                val tickInnerMinorR = diameter * 0.43f
+            Spacer(
+                modifier = Modifier
+                    .size(184.dp)
+                    .drawWithCache {
+                        val diameter = size.minDimension
+                        val center = Offset(size.width / 2f, size.height / 2f)
+                        val arcStrokePx = 9.dp.toPx()
+                        val ringRadius = diameter * 0.37f
+                        val tickOuterR = diameter * 0.46f
+                        val tickInnerMajorR = diameter * 0.415f
+                        val tickInnerMinorR = diameter * 0.43f
+                        val arcTopLeft = Offset(center.x - ringRadius, center.y - ringRadius)
+                        val arcSize = Size(ringRadius * 2f, ringRadius * 2f)
 
-                // Outer tick marks around the 270° cockpit arc
-                val activeSteps = (animatedPercent / 100f) * (DIAL_TICK_COUNT - 1)
-                for (i in 0 until DIAL_TICK_COUNT) {
-                    val fraction = i / (DIAL_TICK_COUNT - 1).toFloat()
-                    val deg = DIAL_START_DEG + fraction * DIAL_SWEEP_DEG
-                    val rad = deg * (PI.toFloat() / 180f)
-                    val cosA = cos(rad)
-                    val sinA = sin(rad)
-                    val isMajor = i % 5 == 0
-                    val innerR = if (isMajor) tickInnerMajorR else tickInnerMinorR
-                    val lit = i <= activeSteps + 0.25f
-                    val tickColor = when {
-                        !enabled -> colors.gridMinor
-                        lit -> activeAccent.copy(alpha = if (isMajor) 0.95f else 0.72f)
-                        else -> colors.gridMajor
-                    }
-                    drawLine(
-                        color = tickColor,
-                        start = Offset(center.x + cosA * innerR, center.y + sinA * innerR),
-                        end = Offset(center.x + cosA * tickOuterR, center.y + sinA * tickOuterR),
-                        strokeWidth = if (isMajor) 1.8.dp.toPx() else 1.1.dp.toPx(),
-                        cap = StrokeCap.Round,
-                    )
-                }
-
-                // Inner aerospace hairline reticle ring
-                drawCircle(
-                    color = colors.borderHairline,
-                    radius = ringRadius - 12.dp.toPx(),
-                    center = center,
-                    style = Stroke(width = 1.dp.toPx()),
-                )
-
-                val arcTopLeft = Offset(center.x - ringRadius, center.y - ringRadius)
-                val arcSize = Size(ringRadius * 2f, ringRadius * 2f)
-
-                // Recessed track arc
-                drawArc(
-                    color = colors.surface,
-                    startAngle = DIAL_START_DEG,
-                    sweepAngle = DIAL_SWEEP_DEG,
-                    useCenter = false,
-                    topLeft = arcTopLeft,
-                    size = arcSize,
-                    style = Stroke(width = arcStrokePx, cap = StrokeCap.Round),
-                )
-                drawArc(
-                    color = colors.gridMajor,
-                    startAngle = DIAL_START_DEG,
-                    sweepAngle = DIAL_SWEEP_DEG,
-                    useCenter = false,
-                    topLeft = arcTopLeft,
-                    size = arcSize,
-                    style = Stroke(width = 1.dp.toPx(), cap = StrokeCap.Round),
-                )
-
-                // Active progress arc + subtle halo glow
-                val activeSweep = (animatedPercent / 100f) * DIAL_SWEEP_DEG
-                if (activeSweep > 0.5f) {
-                    if (enabled) {
-                        drawArc(
-                            color = activeAccent.copy(alpha = 0.22f),
-                            startAngle = DIAL_START_DEG,
-                            sweepAngle = activeSweep,
-                            useCenter = false,
-                            topLeft = arcTopLeft,
-                            size = arcSize,
-                            style = Stroke(width = arcStrokePx + 7.dp.toPx(), cap = StrokeCap.Round),
-                        )
-                    }
-                    drawArc(
-                        brush = Brush.sweepGradient(
-                            colors = listOf(
-                                secondaryAccent,
-                                activeAccent,
-                                secondaryAccent,
-                            ),
+                        val accent = activeAccentState.value
+                        val secAccent = secondaryAccentState.value
+                        val c = colorsState.value
+                        val arcSweepBrush = Brush.sweepGradient(
+                            colors = listOf(secAccent, accent, secAccent),
                             center = center,
-                        ),
-                        startAngle = DIAL_START_DEG,
-                        sweepAngle = activeSweep,
-                        useCenter = false,
-                        topLeft = arcTopLeft,
-                        size = arcSize,
-                        style = Stroke(width = arcStrokePx, cap = StrokeCap.Round),
-                    )
-                }
+                        )
+                        val trackStroke = Stroke(width = arcStrokePx, cap = StrokeCap.Round)
+                        val glowStroke = Stroke(width = arcStrokePx + 7.dp.toPx(), cap = StrokeCap.Round)
+                        val hairlineStroke = Stroke(width = 1.dp.toPx(), cap = StrokeCap.Round)
+                        val majorTickStrokePx = 1.8.dp.toPx()
+                        val minorTickStrokePx = 1.1.dp.toPx()
 
-                // Orbital knob thumb on active arc endpoint
-                val thumbDeg = DIAL_START_DEG + activeSweep
-                val thumbRad = thumbDeg * (PI.toFloat() / 180f)
-                val thumbPos = Offset(
-                    center.x + cos(thumbRad) * ringRadius,
-                    center.y + sin(thumbRad) * ringRadius,
-                )
-                drawCircle(
-                    color = activeAccent.copy(alpha = if (enabled) 0.34f else 0.14f),
-                    radius = 9.dp.toPx(),
-                    center = thumbPos,
-                )
-                drawCircle(
-                    color = if (enabled) colors.textPrimary else colors.textMuted,
-                    radius = 5.5.dp.toPx(),
-                    center = thumbPos,
-                )
-                drawCircle(
-                    color = colors.background,
-                    radius = 2.dp.toPx(),
-                    center = thumbPos,
-                )
-            }
+                        onDrawBehind {
+                            val drawColors = colorsState.value
+                            val drawAccent = activeAccentState.value
+                            val isEnabled = currentEnabled
+                            val pct = animatedPercentState.value
+
+                            // Outer tick marks around the 270° cockpit arc
+                            val activeSteps = (pct / 100f) * (DIAL_TICK_COUNT - 1)
+                            for (i in 0 until DIAL_TICK_COUNT) {
+                                val fraction = i / (DIAL_TICK_COUNT - 1).toFloat()
+                                val deg = DIAL_START_DEG + fraction * DIAL_SWEEP_DEG
+                                val rad = deg * (PI.toFloat() / 180f)
+                                val cosA = cos(rad)
+                                val sinA = sin(rad)
+                                val isMajor = i % 5 == 0
+                                val innerR = if (isMajor) tickInnerMajorR else tickInnerMinorR
+                                val lit = i <= activeSteps + 0.25f
+                                val tickColor = when {
+                                    !isEnabled -> drawColors.gridMinor
+                                    lit -> drawAccent.copy(alpha = if (isMajor) 0.95f else 0.72f)
+                                    else -> drawColors.gridMajor
+                                }
+                                drawLine(
+                                    color = tickColor,
+                                    start = Offset(center.x + cosA * innerR, center.y + sinA * innerR),
+                                    end = Offset(center.x + cosA * tickOuterR, center.y + sinA * tickOuterR),
+                                    strokeWidth = if (isMajor) majorTickStrokePx else minorTickStrokePx,
+                                    cap = StrokeCap.Round,
+                                )
+                            }
+
+                            // Inner aerospace hairline reticle ring
+                            drawCircle(
+                                color = c.borderHairline,
+                                radius = ringRadius - 12.dp.toPx(),
+                                center = center,
+                                style = hairlineStroke,
+                            )
+
+                            // Recessed track arc
+                            drawArc(
+                                color = c.surface,
+                                startAngle = DIAL_START_DEG,
+                                sweepAngle = DIAL_SWEEP_DEG,
+                                useCenter = false,
+                                topLeft = arcTopLeft,
+                                size = arcSize,
+                                style = trackStroke,
+                            )
+                            drawArc(
+                                color = c.gridMajor,
+                                startAngle = DIAL_START_DEG,
+                                sweepAngle = DIAL_SWEEP_DEG,
+                                useCenter = false,
+                                topLeft = arcTopLeft,
+                                size = arcSize,
+                                style = hairlineStroke,
+                            )
+
+                            // Active progress arc + subtle halo glow
+                            val activeSweep = (pct / 100f) * DIAL_SWEEP_DEG
+                            if (activeSweep > 0.5f) {
+                                if (isEnabled) {
+                                    drawArc(
+                                        color = drawAccent.copy(alpha = 0.22f),
+                                        startAngle = DIAL_START_DEG,
+                                        sweepAngle = activeSweep,
+                                        useCenter = false,
+                                        topLeft = arcTopLeft,
+                                        size = arcSize,
+                                        style = glowStroke,
+                                    )
+                                }
+                                drawArc(
+                                    brush = arcSweepBrush,
+                                    startAngle = DIAL_START_DEG,
+                                    sweepAngle = activeSweep,
+                                    useCenter = false,
+                                    topLeft = arcTopLeft,
+                                    size = arcSize,
+                                    style = trackStroke,
+                                )
+                            }
+
+                            // Orbital knob thumb on active arc endpoint
+                            val thumbDeg = DIAL_START_DEG + activeSweep
+                            val thumbRad = thumbDeg * (PI.toFloat() / 180f)
+                            val thumbPos = Offset(
+                                center.x + cos(thumbRad) * ringRadius,
+                                center.y + sin(thumbRad) * ringRadius,
+                            )
+                            drawCircle(
+                                color = drawAccent.copy(alpha = if (isEnabled) 0.34f else 0.14f),
+                                radius = 9.dp.toPx(),
+                                center = thumbPos,
+                            )
+                            drawCircle(
+                                color = if (isEnabled) c.textPrimary else c.textMuted,
+                                radius = 5.5.dp.toPx(),
+                                center = thumbPos,
+                            )
+                            drawCircle(
+                                color = c.background,
+                                radius = 2.dp.toPx(),
+                                center = thumbPos,
+                            )
+                        }
+                    },
+            )
 
             // Center digital HUD telemetry readout
             Column(

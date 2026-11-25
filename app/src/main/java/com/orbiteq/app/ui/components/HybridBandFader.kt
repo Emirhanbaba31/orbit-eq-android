@@ -3,7 +3,6 @@ package com.orbiteq.app.ui.components
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitVerticalTouchSlopOrCancellation
@@ -28,6 +27,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -57,6 +57,15 @@ private const val FADER_MIN_TRIM_DB = -8.0f
 private const val FADER_MAX_TRIM_DB = 8.0f
 private const val FADER_LIVE_RANGE_DB = 15.0f
 private const val ZERO_MAGNETIC_SNAP_DB = 0.35f
+private val FADER_SCALE_TICKS = floatArrayOf(-1f, -0.5f, 0f, 0.5f, 1f)
+
+internal data class FaderDragStepResult(
+    val nextRawDb: Float,
+    val nextSnappedDb: Float,
+    val changed: Boolean,
+    val crossedIntoZeroDetent: Boolean,
+    val nowAtZero: Boolean,
+)
 
 @Composable
 fun HybridBandFader(
@@ -84,7 +93,7 @@ fun HybridBandFader(
 
     var isDragging by remember { mutableStateOf(false) }
 
-    val animatedLiveDb by animateFloatAsState(
+    val animatedLiveDbState = animateFloatAsState(
         targetValue = if (enabled) safeLiveDb else 0f,
         animationSpec = if (reducedMotion) snap() else tween(durationMillis = 85),
         label = "faderLiveDb",
@@ -93,6 +102,9 @@ fun HybridBandFader(
     val currentTrimDb by rememberUpdatedState(clampedTrimDb)
     val currentOnTrimChange by rememberUpdatedState(onTrimChange)
     val currentEnabled by rememberUpdatedState(enabled)
+    val colorsState = rememberUpdatedState(colors)
+    val enabledState = rememberUpdatedState(enabled)
+    val draggingState = rememberUpdatedState(isDragging)
 
     val liveReadout = formatSignedDb(if (enabled) safeLiveDb else 0f)
     val trimReadout = formatSignedDb(clampedTrimDb)
@@ -168,155 +180,166 @@ fun HybridBandFader(
                         var rawDb = currentTrimDb
                         var lastReportedDb = currentTrimDb
                         var wasSnappedZero = abs(lastReportedDb) < 0.05f
+                        var initialDeltaY = 0f
 
-                        val slopChange = awaitVerticalTouchSlopOrCancellation(down.id) { change, _ ->
+                        val slopChange = awaitVerticalTouchSlopOrCancellation(down.id) { change, overSlop ->
+                            initialDeltaY = overSlop
                             change.consume()
                         } ?: return@awaitEachGesture
 
                         isDragging = true
                         val padV = 12.dp.toPx()
                         val usableHeight = (size.height - padV * 2f).coerceAtLeast(1f)
-                        val dbPerPx = (FADER_MAX_TRIM_DB - FADER_MIN_TRIM_DB) / usableHeight
 
-                        val initialDelta = slopChange.positionChange().y
-                        if (abs(initialDelta) > 0f && currentEnabled) {
-                            rawDb = (rawDb - initialDelta * dbPerPx)
-                                .coerceIn(FADER_MIN_TRIM_DB, FADER_MAX_TRIM_DB)
-                            val next = applyZeroMagneticSnap(rawDb)
-                            if (abs(next - lastReportedDb) >= 0.05f) {
-                                val isNowZero = abs(next) < 0.05f
-                                if (isNowZero && !wasSnappedZero) {
+                        fun applyDelta(deltaY: Float) {
+                            if (!currentEnabled || abs(deltaY) <= 0f) return
+                            val step = stepFaderDrag(
+                                currentRawDb = rawDb,
+                                lastReportedDb = lastReportedDb,
+                                wasSnappedZero = wasSnappedZero,
+                                deltaYPx = deltaY,
+                                usableTrackHeightPx = usableHeight,
+                            )
+                            rawDb = step.nextRawDb
+                            if (step.changed) {
+                                if (step.crossedIntoZeroDetent) {
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 }
-                                wasSnappedZero = isNowZero
-                                lastReportedDb = next
-                                currentOnTrimChange(next)
+                                wasSnappedZero = step.nowAtZero
+                                lastReportedDb = step.nextSnappedDb
+                                currentOnTrimChange(step.nextSnappedDb)
                             }
                         }
 
+                        applyDelta(initialDeltaY)
+
                         verticalDrag(slopChange.id) { change ->
-                            change.consume()
-                            if (!currentEnabled) return@verticalDrag
+                            // Read positionChange BEFORE consuming so Compose does not zero the delta.
                             val dy = change.positionChange().y
-                            rawDb = (rawDb - dy * dbPerPx)
-                                .coerceIn(FADER_MIN_TRIM_DB, FADER_MAX_TRIM_DB)
-                            val next = applyZeroMagneticSnap(rawDb)
-                            if (abs(next - lastReportedDb) >= 0.05f) {
-                                val isNowZero = abs(next) < 0.05f
-                                if (isNowZero && !wasSnappedZero) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                }
-                                wasSnappedZero = isNowZero
-                                lastReportedDb = next
-                                currentOnTrimChange(next)
-                            }
+                            change.consume()
+                            applyDelta(dy)
                         }
                         isDragging = false
                     }
                 },
             contentAlignment = Alignment.Center,
         ) {
-            Canvas(
+            Spacer(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(vertical = 12.dp),
-            ) {
-                val w = size.width
-                val h = size.height
-                if (w <= 2f || h <= 2f) return@Canvas
+                    .padding(vertical = 12.dp)
+                    .drawWithCache {
+                        val c = colorsState.value
+                        val w = size.width
+                        val h = size.height
+                        val railW = 6.dp.toPx()
+                        val railCorner = CornerRadius(railW * 0.5f, railW * 0.5f)
+                        val railStroke = Stroke(width = 0.8.dp.toPx())
+                        val positiveLiveBrush = Brush.verticalGradient(
+                            colors = listOf(c.liveAudioPrimary, c.liveAudioSecondary),
+                            startY = 0f,
+                            endY = h * 0.5f,
+                        )
+                        val negativeLiveBrush = Brush.verticalGradient(
+                            colors = listOf(c.liveAudioSecondary, c.liveAudioPrimary),
+                            startY = h * 0.5f,
+                            endY = h,
+                        )
 
-                val centerX = w * 0.5f
-                val centerY = h * 0.5f
-                val halfH = h * 0.5f
-                val railW = 6.dp.toPx()
+                        onDrawBehind {
+                            if (w <= 2f || h <= 2f) return@onDrawBehind
 
-                // Recessed vertical rail
-                drawRoundRect(
-                    color = colors.surface,
-                    topLeft = Offset(centerX - railW * 0.5f, 0f),
-                    size = Size(railW, h),
-                    cornerRadius = CornerRadius(railW * 0.5f, railW * 0.5f),
-                )
-                drawRoundRect(
-                    color = colors.borderHairline,
-                    topLeft = Offset(centerX - railW * 0.5f, 0f),
-                    size = Size(railW, h),
-                    cornerRadius = CornerRadius(railW * 0.5f, railW * 0.5f),
-                    style = Stroke(width = 0.8.dp.toPx()),
-                )
+                            val drawColors = colorsState.value
+                            val isEnabled = enabledState.value
+                            val draggingNow = draggingState.value
+                            val centerX = w * 0.5f
+                            val centerY = h * 0.5f
+                            val halfH = h * 0.5f
 
-                // Scale ticks (+8, +4, 0, -4, -8)
-                for (step in listOf(-1f, -0.5f, 0f, 0.5f, 1f)) {
-                    val y = centerY - step * halfH
-                    val tickHalfW = if (step == 0f) 11.dp.toPx() else 6.dp.toPx()
-                    drawLine(
-                        color = if (step == 0f) colors.gridMajor else colors.gridMinor,
-                        start = Offset(centerX - tickHalfW, y),
-                        end = Offset(centerX + tickHalfW, y),
-                        strokeWidth = if (step == 0f) 1.2.dp.toPx() else 0.8.dp.toPx(),
-                    )
-                }
+                            // Recessed vertical rail
+                            drawRoundRect(
+                                color = drawColors.surface,
+                                topLeft = Offset(centerX - railW * 0.5f, 0f),
+                                size = Size(railW, h),
+                                cornerRadius = railCorner,
+                            )
+                            drawRoundRect(
+                                color = drawColors.borderHairline,
+                                topLeft = Offset(centerX - railW * 0.5f, 0f),
+                                size = Size(railW, h),
+                                cornerRadius = railCorner,
+                                style = railStroke,
+                            )
 
-                // Live animated blue auto-offset bar from 0 dB center datum
-                val liveFraction = (animatedLiveDb / FADER_LIVE_RANGE_DB).coerceIn(-1f, 1f)
-                if (abs(liveFraction) > 0.01f) {
-                    val barTargetY = centerY - liveFraction * halfH
-                    val topY = minOf(centerY, barTargetY)
-                    val barHeight = abs(centerY - barTargetY).coerceAtLeast(2.dp.toPx())
-                    drawRoundRect(
-                        brush = Brush.verticalGradient(
-                            colors = if (liveFraction >= 0f) {
-                                listOf(colors.liveAudioPrimary, colors.liveAudioSecondary)
+                            // Scale ticks (+8, +4, 0, -4, -8)
+                            for (i in FADER_SCALE_TICKS.indices) {
+                                val step = FADER_SCALE_TICKS[i]
+                                val y = centerY - step * halfH
+                                val tickHalfW = if (step == 0f) 11.dp.toPx() else 6.dp.toPx()
+                                drawLine(
+                                    color = if (step == 0f) drawColors.gridMajor else drawColors.gridMinor,
+                                    start = Offset(centerX - tickHalfW, y),
+                                    end = Offset(centerX + tickHalfW, y),
+                                    strokeWidth = if (step == 0f) 1.2.dp.toPx() else 0.8.dp.toPx(),
+                                )
+                            }
+
+                            // Live animated blue auto-offset bar from 0 dB center datum
+                            val liveFraction = (animatedLiveDbState.value / FADER_LIVE_RANGE_DB).coerceIn(-1f, 1f)
+                            if (abs(liveFraction) > 0.01f) {
+                                val barTargetY = centerY - liveFraction * halfH
+                                val topY = minOf(centerY, barTargetY)
+                                val barHeight = abs(centerY - barTargetY).coerceAtLeast(2.dp.toPx())
+                                drawRoundRect(
+                                    brush = if (liveFraction >= 0f) positiveLiveBrush else negativeLiveBrush,
+                                    topLeft = Offset(centerX - railW * 0.5f, topY),
+                                    size = Size(railW, barHeight),
+                                    cornerRadius = railCorner,
+                                )
+                            }
+
+                            // White manual trim thumb capsule
+                            val trimDb = currentTrimDb
+                            val trimActive = abs(trimDb) > 0.05f
+                            val trimNorm = (trimDb / FADER_MAX_TRIM_DB).coerceIn(-1f, 1f)
+                            val thumbY = centerY - trimNorm * halfH
+                            val thumbW = 26.dp.toPx()
+                            val thumbH = 13.dp.toPx()
+                            val thumbRadius = CornerRadius(thumbH * 0.5f, thumbH * 0.5f)
+                            val thumbTopLeft = Offset(centerX - thumbW * 0.5f, thumbY - thumbH * 0.5f)
+
+                            if (draggingNow || (trimActive && isEnabled)) {
+                                drawRoundRect(
+                                    color = drawColors.ionAccent.copy(alpha = if (draggingNow) 0.42f else 0.24f),
+                                    topLeft = Offset(thumbTopLeft.x - 2.dp.toPx(), thumbTopLeft.y - 2.dp.toPx()),
+                                    size = Size(thumbW + 4.dp.toPx(), thumbH + 4.dp.toPx()),
+                                    cornerRadius = CornerRadius(thumbH * 0.65f, thumbH * 0.65f),
+                                )
+                            }
+
+                            val thumbFill = if (isEnabled) {
+                                drawColors.textPrimary
                             } else {
-                                listOf(colors.liveAudioSecondary, colors.liveAudioPrimary)
-                            },
-                            startY = topY,
-                            endY = topY + barHeight,
-                        ),
-                        topLeft = Offset(centerX - railW * 0.5f, topY),
-                        size = Size(railW, barHeight),
-                        cornerRadius = CornerRadius(railW * 0.5f, railW * 0.5f),
-                    )
-                }
+                                drawColors.textMuted.copy(alpha = 0.45f)
+                            }
+                            drawRoundRect(
+                                color = thumbFill,
+                                topLeft = thumbTopLeft,
+                                size = Size(thumbW, thumbH),
+                                cornerRadius = thumbRadius,
+                            )
 
-                // White manual trim thumb capsule
-                val trimNorm = (clampedTrimDb / FADER_MAX_TRIM_DB).coerceIn(-1f, 1f)
-                val thumbY = centerY - trimNorm * halfH
-                val thumbW = 26.dp.toPx()
-                val thumbH = 13.dp.toPx()
-                val thumbRadius = CornerRadius(thumbH * 0.5f, thumbH * 0.5f)
-                val thumbTopLeft = Offset(centerX - thumbW * 0.5f, thumbY - thumbH * 0.5f)
-
-                if (isDragging || (hasActiveTrim && enabled)) {
-                    drawRoundRect(
-                        color = colors.ionAccent.copy(alpha = if (isDragging) 0.42f else 0.24f),
-                        topLeft = Offset(thumbTopLeft.x - 2.dp.toPx(), thumbTopLeft.y - 2.dp.toPx()),
-                        size = Size(thumbW + 4.dp.toPx(), thumbH + 4.dp.toPx()),
-                        cornerRadius = CornerRadius(thumbH * 0.65f, thumbH * 0.65f),
-                    )
-                }
-
-                val thumbFill = if (enabled) {
-                    colors.textPrimary
-                } else {
-                    colors.textMuted.copy(alpha = 0.45f)
-                }
-                drawRoundRect(
-                    color = thumbFill,
-                    topLeft = thumbTopLeft,
-                    size = Size(thumbW, thumbH),
-                    cornerRadius = thumbRadius,
-                )
-
-                // Hardware fader center grip line
-                val gripW = 12.dp.toPx()
-                drawLine(
-                    color = if (hasActiveTrim && enabled) colors.primaryAccent else colors.background,
-                    start = Offset(centerX - gripW * 0.5f, thumbY),
-                    end = Offset(centerX + gripW * 0.5f, thumbY),
-                    strokeWidth = 1.6.dp.toPx(),
-                )
-            }
+                            // Hardware fader center grip line
+                            val gripW = 12.dp.toPx()
+                            drawLine(
+                                color = if (trimActive && isEnabled) drawColors.primaryAccent else drawColors.background,
+                                start = Offset(centerX - gripW * 0.5f, thumbY),
+                                end = Offset(centerX + gripW * 0.5f, thumbY),
+                                strokeWidth = 1.6.dp.toPx(),
+                            )
+                        }
+                    },
+            )
         }
 
         Spacer(modifier = Modifier.height(6.dp))
@@ -343,7 +366,30 @@ fun HybridBandFader(
     }
 }
 
-private fun applyZeroMagneticSnap(rawDb: Float): Float {
+internal fun stepFaderDrag(
+    currentRawDb: Float,
+    lastReportedDb: Float,
+    wasSnappedZero: Boolean,
+    deltaYPx: Float,
+    usableTrackHeightPx: Float,
+): FaderDragStepResult {
+    val safeHeight = usableTrackHeightPx.coerceAtLeast(1f)
+    val dbPerPx = (FADER_MAX_TRIM_DB - FADER_MIN_TRIM_DB) / safeHeight
+    val nextRawDb = (currentRawDb - deltaYPx * dbPerPx)
+        .coerceIn(FADER_MIN_TRIM_DB, FADER_MAX_TRIM_DB)
+    val nextSnappedDb = applyZeroMagneticSnap(nextRawDb)
+    val changed = abs(nextSnappedDb - lastReportedDb) >= 0.05f
+    val nowAtZero = abs(nextSnappedDb) < 0.05f
+    return FaderDragStepResult(
+        nextRawDb = nextRawDb,
+        nextSnappedDb = nextSnappedDb,
+        changed = changed,
+        crossedIntoZeroDetent = changed && nowAtZero && !wasSnappedZero,
+        nowAtZero = nowAtZero,
+    )
+}
+
+internal fun applyZeroMagneticSnap(rawDb: Float): Float {
     val clamped = rawDb.coerceIn(FADER_MIN_TRIM_DB, FADER_MAX_TRIM_DB)
     return if (abs(clamped) <= ZERO_MAGNETIC_SNAP_DB) {
         0f

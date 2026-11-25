@@ -7,7 +7,6 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -30,14 +29,17 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -48,6 +50,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -73,6 +76,7 @@ private const val PLOT_MAX_DB = 15f
 private const val PREAMP_BAR_MAX_CUT_DB = 12f
 private const val SPECTRUM_BIN_COUNT = 36
 private const val EQ_BAND_COUNT = 10
+private val GRID_DB_LEVELS = floatArrayOf(-12f, -6f, 6f, 12f)
 
 private class SpectrumAnimBuffer {
     val displayBins = FloatArray(SPECTRUM_BIN_COUNT)
@@ -82,6 +86,11 @@ private class SpectrumAnimBuffer {
     val targetBins = FloatArray(SPECTRUM_BIN_COUNT)
     val targetLive = FloatArray(EQ_BAND_COUNT)
     val targetCurve = FloatArray(EQ_BAND_COUNT)
+
+    // Pre-allocated coordinate buffers reused across 60fps frames
+    val bandXs = FloatArray(EQ_BAND_COUNT)
+    val targetYs = FloatArray(EQ_BAND_COUNT)
+    val liveYs = FloatArray(EQ_BAND_COUNT)
 
     var dataVersion by mutableLongStateOf(0L)
     var frameTick by mutableLongStateOf(0L)
@@ -230,20 +239,6 @@ fun HeroSpectrumCanvas(
         EngineStatus.BYPASSED -> colors.danger
         EngineStatus.IDLE -> colors.textMuted
     }
-    val pulseAlpha = if (effectiveStatus == EngineStatus.AUTO_FFT_LOCKED && !reducedMotion) {
-        val pulseTransition = rememberInfiniteTransition(label = "hudStatusPulse")
-        pulseTransition.animateFloat(
-            initialValue = 1f,
-            targetValue = 0.38f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1050),
-                repeatMode = RepeatMode.Reverse,
-            ),
-            label = "statusDotPulse",
-        ).value
-    } else {
-        1f
-    }
 
     val loudLabel = stringResource(R.string.hud_loud_label)
     val loudOff = stringResource(R.string.hud_loud_off)
@@ -285,6 +280,23 @@ fun HeroSpectrumCanvas(
     val livePath = remember { Path() }
     val liveFillPath = remember { Path() }
     val dashEffect = remember { PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f) }
+    val preampBarBrush = remember(colors.liveAudioSecondary, colors.liveAudioPrimary) {
+        Brush.horizontalGradient(
+            colors = listOf(
+                colors.liveAudioSecondary,
+                colors.liveAudioPrimary,
+            ),
+        )
+    }
+
+    // Updated state holders so 60fps Draw/GraphicsLayer loops avoid recomposition
+    val colorsState = rememberUpdatedState(colors)
+    val liveProcessingState = rememberUpdatedState(isLiveProcessing)
+    val reducedMotionState = rememberUpdatedState(reducedMotion)
+    val binsState = rememberUpdatedState(spectrumBins36)
+    val targetCurveState = rememberUpdatedState(targetCurveDb)
+    val liveCurveState = rememberUpdatedState(liveCurveDb)
+    val trimsState = rememberUpdatedState(manualTrimsDb)
 
     Surface(
         modifier = modifier
@@ -321,11 +333,9 @@ fun HeroSpectrumCanvas(
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(statusDotColor.copy(alpha = pulseAlpha)),
+                            StatusPulseDot(
+                                color = statusDotColor,
+                                pulsing = effectiveStatus == EngineStatus.AUTO_FFT_LOCKED && !reducedMotion,
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
@@ -374,251 +384,293 @@ fun HeroSpectrumCanvas(
                 }
 
                 Column(modifier = plotModifier) {
-                    Canvas(
+                    Spacer(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .weight(1f),
-                    ) {
-                        // Read frame tick so only Draw invalidates at 60fps
-                        @Suppress("UNUSED_VARIABLE")
-                        val frame = animBuffer.frameTick
+                            .weight(1f)
+                            .drawWithCache {
+                                val w = size.width
+                                val h = size.height
+                                val c = colorsState.value
 
-                        val w = size.width
-                        val h = size.height
-                        if (w <= 4f || h <= 4f) return@Canvas
+                                val padH = 4.dp.toPx()
+                                val padV = 6.dp.toPx()
+                                val plotLeft = padH
+                                val plotRight = w - padH
+                                val plotTop = padV
+                                val plotBottom = h - padV
+                                val plotW = (plotRight - plotLeft).coerceAtLeast(1f)
+                                val plotH = (plotBottom - plotTop).coerceAtLeast(1f)
 
-                        val padH = 4.dp.toPx()
-                        val padV = 6.dp.toPx()
-                        val plotLeft = padH
-                        val plotRight = w - padH
-                        val plotTop = padV
-                        val plotBottom = h - padV
-                        val plotW = (plotRight - plotLeft).coerceAtLeast(1f)
-                        val plotH = (plotBottom - plotTop).coerceAtLeast(1f)
-
-                        fun dbToY(db: Float): Float {
-                            val norm = ((PLOT_MAX_DB - db) / (PLOT_MAX_DB - PLOT_MIN_DB)).coerceIn(0f, 1f)
-                            return plotTop + norm * plotH
-                        }
-
-                        val zeroY = dbToY(0f)
-
-                        // Layer 1: 3-Layer Aerospace HUD Grid (dB horizontals + 10 ISO log-frequency verticals + corner reticles)
-                        val minorStroke = 0.75.dp.toPx()
-                        val majorStroke = 1.dp.toPx()
-                        for (dbLevel in listOf(-12f, -6f, 6f, 12f)) {
-                            val y = dbToY(dbLevel)
-                            drawLine(
-                                color = colors.gridMinor,
-                                start = Offset(plotLeft, y),
-                                end = Offset(plotRight, y),
-                                strokeWidth = minorStroke,
-                            )
-                        }
-                        drawLine(
-                            color = colors.gridMajor,
-                            start = Offset(plotLeft, zeroY),
-                            end = Offset(plotRight, zeroY),
-                            strokeWidth = majorStroke,
-                        )
-                        for (b in 0 until EQ_BAND_COUNT) {
-                            val x = plotLeft + (b / (EQ_BAND_COUNT - 1).toFloat()) * plotW
-                            drawLine(
-                                color = colors.gridMinor,
-                                start = Offset(x, plotTop),
-                                end = Offset(x, plotBottom),
-                                strokeWidth = minorStroke,
-                            )
-                        }
-
-                        // Subtle HUD corner framing ticks
-                        val tickLen = 7.dp.toPx()
-                        val tickColor = colors.textMuted.copy(alpha = 0.45f)
-                        drawLine(tickColor, Offset(0f, 0f), Offset(tickLen, 0f), majorStroke)
-                        drawLine(tickColor, Offset(0f, 0f), Offset(0f, tickLen), majorStroke)
-                        drawLine(tickColor, Offset(w, 0f), Offset(w - tickLen, 0f), majorStroke)
-                        drawLine(tickColor, Offset(w, 0f), Offset(w, tickLen), majorStroke)
-                        drawLine(tickColor, Offset(0f, h), Offset(tickLen, h), majorStroke)
-                        drawLine(tickColor, Offset(0f, h), Offset(0f, h - tickLen), majorStroke)
-                        drawLine(tickColor, Offset(w, h), Offset(w - tickLen, h), majorStroke)
-                        drawLine(tickColor, Offset(w, h), Offset(w, h - tickLen), majorStroke)
-
-                        // Layer 2: 36-bin FFT spectrum bars
-                        val activeBinsSource = if (reducedMotion) {
-                            if (isLiveProcessing) spectrumBins36 else null
-                        } else {
-                            null
-                        }
-                        val slotW = plotW / SPECTRUM_BIN_COUNT.toFloat()
-                        val barW = (slotW * 0.62f).coerceAtLeast(1.5.dp.toPx())
-                        val barCorner = CornerRadius(barW * 0.4f, barW * 0.4f)
-                        val barAlphaScale = if (isLiveProcessing) 1f else 0.25f
-
-                        for (i in 0 until SPECTRUM_BIN_COUNT) {
-                            val rawBin = if (reducedMotion) {
-                                sanitizeFinite(activeBinsSource?.getOrElse(i) { 0f } ?: 0f)
-                            } else {
-                                animBuffer.displayBins[i]
-                            }
-                            val binVal = rawBin.coerceIn(0f, 1f)
-                            if (binVal <= 0.01f) continue
-                            val barH = (binVal * plotH * 0.88f).coerceAtLeast(2.dp.toPx())
-                            val barX = plotLeft + i * slotW + (slotW - barW) * 0.5f
-                            val barTop = plotBottom - barH
-                            drawRoundRect(
-                                brush = Brush.verticalGradient(
-                                    colors = listOf(
-                                        colors.liveAudioPrimary.copy(alpha = 0.44f * barAlphaScale),
-                                        colors.liveAudioSecondary.copy(alpha = 0.20f * barAlphaScale),
-                                        colors.liveAudioDeep.copy(alpha = 0.04f * barAlphaScale),
-                                    ),
-                                    startY = barTop,
-                                    endY = plotBottom,
-                                ),
-                                topLeft = Offset(barX, barTop),
-                                size = Size(barW, barH),
-                                cornerRadius = barCorner,
-                            )
-                            drawLine(
-                                color = colors.liveAudioPrimary.copy(alpha = 0.85f * barAlphaScale),
-                                start = Offset(barX, barTop),
-                                end = Offset(barX + barW, barTop),
-                                strokeWidth = 1.5.dp.toPx(),
-                                cap = StrokeCap.Round,
-                            )
-                        }
-
-                        // Compute 10 ISO curve coordinates
-                        val bandXs = FloatArray(EQ_BAND_COUNT) { b ->
-                            plotLeft + (b / (EQ_BAND_COUNT - 1).toFloat()) * plotW
-                        }
-                        val targetYs = FloatArray(EQ_BAND_COUNT) { b ->
-                            val db = if (reducedMotion) {
-                                sanitizeFinite(targetCurveDb.getOrElse(b) { 0f }).coerceIn(PLOT_MIN_DB, PLOT_MAX_DB)
-                            } else {
-                                animBuffer.displayTarget[b]
-                            }
-                            dbToY(db)
-                        }
-                        val liveYs = FloatArray(EQ_BAND_COUNT) { b ->
-                            val db = if (reducedMotion) {
-                                if (isLiveProcessing) {
-                                    sanitizeFinite(liveCurveDb.getOrElse(b) { 0f }).coerceIn(PLOT_MIN_DB, PLOT_MAX_DB)
-                                } else {
-                                    0f
+                                for (b in 0 until EQ_BAND_COUNT) {
+                                    animBuffer.bandXs[b] = plotLeft + (b / (EQ_BAND_COUNT - 1).toFloat()) * plotW
                                 }
-                            } else {
-                                animBuffer.displayLive[b]
-                            }
-                            dbToY(db)
-                        }
 
-                        // Layer 3a: Dashed Target Curve
-                        buildCatmullRomPath(
-                            xs = bandXs,
-                            ys = targetYs,
-                            minY = plotTop,
-                            maxY = plotBottom,
-                            outPath = targetPath,
-                        )
-                        drawPath(
-                            path = targetPath,
-                            color = colors.textSecondary.copy(alpha = if (isLiveProcessing) 0.58f else 0.38f),
-                            style = Stroke(
-                                width = 1.4.dp.toPx(),
-                                cap = StrokeCap.Round,
-                                join = StrokeJoin.Round,
-                                pathEffect = dashEffect,
-                            ),
-                        )
+                                val minorStroke = 0.75.dp.toPx()
+                                val majorStroke = 1.dp.toPx()
+                                val tickLen = 7.dp.toPx()
+                                val tickColor = c.textMuted.copy(alpha = 0.45f)
 
-                        // Layer 3b: Glowing Live EQ Curve + Fill + Orbital Nodes
-                        buildCatmullRomPath(
-                            xs = bandXs,
-                            ys = liveYs,
-                            minY = plotTop,
-                            maxY = plotBottom,
-                            outPath = livePath,
-                        )
-                        val curveAlpha = if (isLiveProcessing) 1f else 0.32f
+                                val slotW = plotW / SPECTRUM_BIN_COUNT.toFloat()
+                                val barW = (slotW * 0.62f).coerceAtLeast(1.5.dp.toPx())
+                                val barCorner = CornerRadius(barW * 0.4f, barW * 0.4f)
+                                val minBarH = 2.dp.toPx()
+                                val barCapStroke = 1.5.dp.toPx()
 
-                        liveFillPath.reset()
-                        liveFillPath.addPath(livePath)
-                        liveFillPath.lineTo(bandXs[EQ_BAND_COUNT - 1], zeroY)
-                        liveFillPath.lineTo(bandXs[0], zeroY)
-                        liveFillPath.close()
+                                // Cached plot-height gradients: zero Brush/List allocations inside 60fps draw
+                                val activeBarBrush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        c.liveAudioPrimary.copy(alpha = 0.44f),
+                                        c.liveAudioSecondary.copy(alpha = 0.20f),
+                                        c.liveAudioDeep.copy(alpha = 0.04f),
+                                    ),
+                                    startY = plotTop,
+                                    endY = plotBottom,
+                                )
+                                val inactiveBarBrush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        c.liveAudioPrimary.copy(alpha = 0.11f),
+                                        c.liveAudioSecondary.copy(alpha = 0.05f),
+                                        c.liveAudioDeep.copy(alpha = 0.01f),
+                                    ),
+                                    startY = plotTop,
+                                    endY = plotBottom,
+                                )
+                                val activeCurveFillBrush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        c.liveAudioPrimary.copy(alpha = 0.22f),
+                                        c.liveAudioSecondary.copy(alpha = 0.04f),
+                                        Color.Transparent,
+                                    ),
+                                    startY = plotTop,
+                                    endY = plotBottom,
+                                )
+                                val inactiveCurveFillBrush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        c.liveAudioPrimary.copy(alpha = 0.07f),
+                                        c.liveAudioSecondary.copy(alpha = 0.013f),
+                                        Color.Transparent,
+                                    ),
+                                    startY = plotTop,
+                                    endY = plotBottom,
+                                )
 
-                        drawPath(
-                            path = liveFillPath,
-                            brush = Brush.verticalGradient(
-                                colors = listOf(
-                                    colors.liveAudioPrimary.copy(alpha = 0.22f * curveAlpha),
-                                    colors.liveAudioSecondary.copy(alpha = 0.04f * curveAlpha),
-                                    Color.Transparent,
-                                ),
-                                startY = plotTop,
-                                endY = plotBottom,
-                            ),
-                        )
-
-                        if (isLiveProcessing) {
-                            drawPath(
-                                path = livePath,
-                                color = colors.liveAudioPrimary.copy(alpha = 0.24f),
-                                style = Stroke(
+                                val targetStroke = Stroke(
+                                    width = 1.4.dp.toPx(),
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round,
+                                    pathEffect = dashEffect,
+                                )
+                                val glowOuterStroke = Stroke(
                                     width = 6.5.dp.toPx(),
                                     cap = StrokeCap.Round,
                                     join = StrokeJoin.Round,
-                                ),
-                            )
-                            drawPath(
-                                path = livePath,
-                                color = colors.liveAudioSecondary.copy(alpha = 0.48f),
-                                style = Stroke(
+                                )
+                                val glowMidStroke = Stroke(
                                     width = 3.2.dp.toPx(),
                                     cap = StrokeCap.Round,
                                     join = StrokeJoin.Round,
-                                ),
-                            )
-                        }
-
-                        drawPath(
-                            path = livePath,
-                            color = colors.liveAudioPrimary.copy(alpha = curveAlpha),
-                            style = Stroke(
-                                width = 2.dp.toPx(),
-                                cap = StrokeCap.Round,
-                                join = StrokeJoin.Round,
-                            ),
-                        )
-
-                        // Orbital nodes on each of the 10 ISO bands
-                        val haloR = 4.5.dp.toPx()
-                        val coreR = 2.4.dp.toPx()
-                        val trimRingR = 5.8.dp.toPx()
-                        for (b in 0 until EQ_BAND_COUNT) {
-                            val center = Offset(bandXs[b], liveYs[b])
-                            val trimActive = abs(sanitizeFinite(manualTrimsDb.getOrElse(b) { 0f })) > 0.05f
-                            if (trimActive && isLiveProcessing) {
-                                drawCircle(
-                                    color = colors.textPrimary.copy(alpha = 0.65f),
-                                    radius = trimRingR,
-                                    center = center,
-                                    style = Stroke(width = 1.dp.toPx()),
                                 )
-                            }
-                            drawCircle(
-                                color = colors.liveAudioPrimary.copy(alpha = 0.28f * curveAlpha),
-                                radius = haloR,
-                                center = center,
-                            )
-                            drawCircle(
-                                color = colors.textPrimary.copy(alpha = curveAlpha),
-                                radius = coreR,
-                                center = center,
-                            )
-                        }
-                    }
+                                val coreStroke = Stroke(
+                                    width = 2.dp.toPx(),
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round,
+                                )
+                                val trimRingStroke = Stroke(width = 1.dp.toPx())
+                                val haloR = 4.5.dp.toPx()
+                                val coreR = 2.4.dp.toPx()
+                                val trimRingR = 5.8.dp.toPx()
+
+                                onDrawBehind {
+                                    // Read frameTick so ONLY the Draw phase invalidates at 60fps
+                                    @Suppress("UNUSED_VARIABLE")
+                                    val frame = animBuffer.frameTick
+
+                                    if (w <= 4f || h <= 4f) return@onDrawBehind
+
+                                    val drawColors = colorsState.value
+                                    val liveProcessing = liveProcessingState.value
+                                    val isReduced = reducedMotionState.value
+                                    val binsSource = binsState.value
+                                    val targetSource = targetCurveState.value
+                                    val liveSource = liveCurveState.value
+                                    val trimsSource = trimsState.value
+
+                                    fun dbToY(db: Float): Float {
+                                        val norm = ((PLOT_MAX_DB - db) / (PLOT_MAX_DB - PLOT_MIN_DB)).coerceIn(0f, 1f)
+                                        return plotTop + norm * plotH
+                                    }
+
+                                    val zeroY = dbToY(0f)
+
+                                    // Layer 1: 3-Layer Aerospace HUD Grid
+                                    for (i in GRID_DB_LEVELS.indices) {
+                                        val y = dbToY(GRID_DB_LEVELS[i])
+                                        drawLine(
+                                            color = drawColors.gridMinor,
+                                            start = Offset(plotLeft, y),
+                                            end = Offset(plotRight, y),
+                                            strokeWidth = minorStroke,
+                                        )
+                                    }
+                                    drawLine(
+                                        color = drawColors.gridMajor,
+                                        start = Offset(plotLeft, zeroY),
+                                        end = Offset(plotRight, zeroY),
+                                        strokeWidth = majorStroke,
+                                    )
+                                    for (b in 0 until EQ_BAND_COUNT) {
+                                        val x = animBuffer.bandXs[b]
+                                        drawLine(
+                                            color = drawColors.gridMinor,
+                                            start = Offset(x, plotTop),
+                                            end = Offset(x, plotBottom),
+                                            strokeWidth = minorStroke,
+                                        )
+                                    }
+
+                                    // Subtle HUD corner framing ticks
+                                    drawLine(tickColor, Offset(0f, 0f), Offset(tickLen, 0f), majorStroke)
+                                    drawLine(tickColor, Offset(0f, 0f), Offset(0f, tickLen), majorStroke)
+                                    drawLine(tickColor, Offset(w, 0f), Offset(w - tickLen, 0f), majorStroke)
+                                    drawLine(tickColor, Offset(w, 0f), Offset(w, tickLen), majorStroke)
+                                    drawLine(tickColor, Offset(0f, h), Offset(tickLen, h), majorStroke)
+                                    drawLine(tickColor, Offset(0f, h), Offset(0f, h - tickLen), majorStroke)
+                                    drawLine(tickColor, Offset(w, h), Offset(w - tickLen, h), majorStroke)
+                                    drawLine(tickColor, Offset(w, h), Offset(w, h - tickLen), majorStroke)
+
+                                    // Layer 2: 36-bin FFT spectrum bars using cached plot gradient
+                                    val barBrush = if (liveProcessing) activeBarBrush else inactiveBarBrush
+                                    val barCapColor = drawColors.liveAudioPrimary.copy(
+                                        alpha = if (liveProcessing) 0.85f else 0.21f,
+                                    )
+                                    for (i in 0 until SPECTRUM_BIN_COUNT) {
+                                        val rawBin = if (isReduced) {
+                                            if (liveProcessing) sanitizeFinite(binsSource.getOrElse(i) { 0f }) else 0f
+                                        } else {
+                                            animBuffer.displayBins[i]
+                                        }
+                                        val binVal = rawBin.coerceIn(0f, 1f)
+                                        if (binVal <= 0.01f) continue
+                                        val barH = (binVal * plotH * 0.88f).coerceAtLeast(minBarH)
+                                        val barX = plotLeft + i * slotW + (slotW - barW) * 0.5f
+                                        val barTop = plotBottom - barH
+                                        drawRoundRect(
+                                            brush = barBrush,
+                                            topLeft = Offset(barX, barTop),
+                                            size = Size(barW, barH),
+                                            cornerRadius = barCorner,
+                                        )
+                                        drawLine(
+                                            color = barCapColor,
+                                            start = Offset(barX, barTop),
+                                            end = Offset(barX + barW, barTop),
+                                            strokeWidth = barCapStroke,
+                                            cap = StrokeCap.Round,
+                                        )
+                                    }
+
+                                    // Compute 10 ISO curve coordinates into pre-allocated buffers
+                                    for (b in 0 until EQ_BAND_COUNT) {
+                                        val targetDb = if (isReduced) {
+                                            sanitizeFinite(targetSource.getOrElse(b) { 0f }).coerceIn(PLOT_MIN_DB, PLOT_MAX_DB)
+                                        } else {
+                                            animBuffer.displayTarget[b]
+                                        }
+                                        animBuffer.targetYs[b] = dbToY(targetDb)
+
+                                        val liveDb = if (isReduced) {
+                                            if (liveProcessing) {
+                                                sanitizeFinite(liveSource.getOrElse(b) { 0f }).coerceIn(PLOT_MIN_DB, PLOT_MAX_DB)
+                                            } else {
+                                                0f
+                                            }
+                                        } else {
+                                            animBuffer.displayLive[b]
+                                        }
+                                        animBuffer.liveYs[b] = dbToY(liveDb)
+                                    }
+
+                                    // Layer 3a: Dashed Target Curve
+                                    buildCatmullRomPath(
+                                        xs = animBuffer.bandXs,
+                                        ys = animBuffer.targetYs,
+                                        minY = plotTop,
+                                        maxY = plotBottom,
+                                        outPath = targetPath,
+                                    )
+                                    drawPath(
+                                        path = targetPath,
+                                        color = drawColors.textSecondary.copy(alpha = if (liveProcessing) 0.58f else 0.38f),
+                                        style = targetStroke,
+                                    )
+
+                                    // Layer 3b: Glowing Live EQ Curve + Fill + Orbital Nodes
+                                    buildCatmullRomPath(
+                                        xs = animBuffer.bandXs,
+                                        ys = animBuffer.liveYs,
+                                        minY = plotTop,
+                                        maxY = plotBottom,
+                                        outPath = livePath,
+                                    )
+                                    val curveAlpha = if (liveProcessing) 1f else 0.32f
+
+                                    liveFillPath.reset()
+                                    liveFillPath.addPath(livePath)
+                                    liveFillPath.lineTo(animBuffer.bandXs[EQ_BAND_COUNT - 1], zeroY)
+                                    liveFillPath.lineTo(animBuffer.bandXs[0], zeroY)
+                                    liveFillPath.close()
+
+                                    drawPath(
+                                        path = liveFillPath,
+                                        brush = if (liveProcessing) activeCurveFillBrush else inactiveCurveFillBrush,
+                                    )
+
+                                    if (liveProcessing) {
+                                        drawPath(
+                                            path = livePath,
+                                            color = drawColors.liveAudioPrimary.copy(alpha = 0.24f),
+                                            style = glowOuterStroke,
+                                        )
+                                        drawPath(
+                                            path = livePath,
+                                            color = drawColors.liveAudioSecondary.copy(alpha = 0.48f),
+                                            style = glowMidStroke,
+                                        )
+                                    }
+
+                                    drawPath(
+                                        path = livePath,
+                                        color = drawColors.liveAudioPrimary.copy(alpha = curveAlpha),
+                                        style = coreStroke,
+                                    )
+
+                                    // Orbital nodes on each of the 10 ISO bands
+                                    for (b in 0 until EQ_BAND_COUNT) {
+                                        val center = Offset(animBuffer.bandXs[b], animBuffer.liveYs[b])
+                                        val trimActive = abs(sanitizeFinite(trimsSource.getOrElse(b) { 0f })) > 0.05f
+                                        if (trimActive && liveProcessing) {
+                                            drawCircle(
+                                                color = drawColors.textPrimary.copy(alpha = 0.65f),
+                                                radius = trimRingR,
+                                                center = center,
+                                                style = trimRingStroke,
+                                            )
+                                        }
+                                        drawCircle(
+                                            color = drawColors.liveAudioPrimary.copy(alpha = 0.28f * curveAlpha),
+                                            radius = haloR,
+                                            center = center,
+                                        )
+                                        drawCircle(
+                                            color = drawColors.textPrimary.copy(alpha = curveAlpha),
+                                            radius = coreR,
+                                            center = center,
+                                        )
+                                    }
+                                }
+                            },
+                    )
 
                     Spacer(modifier = Modifier.height(4.dp))
 
@@ -696,14 +748,7 @@ fun HeroSpectrumCanvas(
                                         .fillMaxHeight()
                                         .fillMaxWidth(preampFillFraction)
                                         .clip(RoundedCornerShape(999.dp))
-                                        .background(
-                                            Brush.horizontalGradient(
-                                                colors = listOf(
-                                                    colors.liveAudioSecondary,
-                                                    colors.liveAudioPrimary,
-                                                ),
-                                            ),
-                                        ),
+                                        .background(preampBarBrush),
                                 )
                             }
                         }
@@ -745,6 +790,37 @@ fun HeroSpectrumCanvas(
 }
 
 @Composable
+private fun StatusPulseDot(
+    color: Color,
+    pulsing: Boolean,
+) {
+    val alphaState: State<Float>? = if (pulsing) {
+        val pulseTransition = rememberInfiniteTransition(label = "hudStatusPulse")
+        pulseTransition.animateFloat(
+            initialValue = 1f,
+            targetValue = 0.38f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1050),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "statusDotPulse",
+        )
+    } else {
+        null
+    }
+
+    Box(
+        modifier = Modifier
+            .size(6.dp)
+            .graphicsLayer {
+                alpha = alphaState?.value ?: 1f
+            }
+            .clip(CircleShape)
+            .background(color),
+    )
+}
+
+@Composable
 fun ModeMiniCurveIcon(
     mode: PleasureMode,
     tint: Color,
@@ -753,94 +829,89 @@ fun ModeMiniCurveIcon(
     val curveDb = remember(mode) { PleasureProfiles.targetCurveFor(mode) }
     val curvePath = remember { Path() }
     val fillPath = remember { Path() }
+    val xs = remember { FloatArray(EQ_BAND_COUNT) }
+    val ys = remember { FloatArray(EQ_BAND_COUNT) }
+    val tintState = rememberUpdatedState(tint)
 
-    Canvas(
+    Spacer(
         modifier = modifier
-            .size(width = 44.dp, height = 22.dp),
-    ) {
-        val w = size.width
-        val h = size.height
-        if (w <= 2f || h <= 2f) return@Canvas
+            .size(width = 44.dp, height = 22.dp)
+            .drawWithCache {
+                val w = size.width
+                val h = size.height
+                val currentTint = tintState.value
+                val padX = 2.dp.toPx()
+                val padY = 2.5.dp.toPx()
+                val plotW = (w - padX * 2f).coerceAtLeast(1f)
+                val plotH = (h - padY * 2f).coerceAtLeast(1f)
+                val minDb = -5.5f
+                val maxDb = 6.5f
 
-        val padX = 2.dp.toPx()
-        val padY = 2.5.dp.toPx()
-        val plotW = (w - padX * 2f).coerceAtLeast(1f)
-        val plotH = (h - padY * 2f).coerceAtLeast(1f)
-        val minDb = -5.5f
-        val maxDb = 6.5f
+                fun dbToY(db: Float): Float {
+                    val norm = ((maxDb - db) / (maxDb - minDb)).coerceIn(0f, 1f)
+                    return padY + norm * plotH
+                }
 
-        fun dbToY(db: Float): Float {
-            val norm = ((maxDb - db) / (maxDb - minDb)).coerceIn(0f, 1f)
-            return padY + norm * plotH
-        }
+                val zeroY = dbToY(0f)
+                for (i in 0 until EQ_BAND_COUNT) {
+                    xs[i] = padX + (i / (EQ_BAND_COUNT - 1).toFloat()) * plotW
+                    ys[i] = dbToY(curveDb[i])
+                }
+                buildCatmullRomPath(
+                    xs = xs,
+                    ys = ys,
+                    minY = padY,
+                    maxY = h - padY,
+                    outPath = curvePath,
+                )
+                fillPath.reset()
+                fillPath.addPath(curvePath)
+                fillPath.lineTo(xs[EQ_BAND_COUNT - 1], zeroY)
+                fillPath.lineTo(xs[0], zeroY)
+                fillPath.close()
 
-        val zeroY = dbToY(0f)
-        drawLine(
-            color = tint.copy(alpha = 0.25f),
-            start = Offset(padX, zeroY),
-            end = Offset(w - padX, zeroY),
-            strokeWidth = 0.75.dp.toPx(),
-        )
+                var peakIdx = 0
+                var bestAbs = -1f
+                for (i in 0 until EQ_BAND_COUNT) {
+                    val mag = abs(curveDb[i])
+                    if (mag > bestAbs) {
+                        bestAbs = mag
+                        peakIdx = i
+                    }
+                }
+                val peakCenter = Offset(xs[peakIdx], ys[peakIdx])
+                val fillBrush = Brush.verticalGradient(
+                    colors = listOf(
+                        currentTint.copy(alpha = 0.24f),
+                        Color.Transparent,
+                    ),
+                    startY = padY,
+                    endY = h - padY,
+                )
+                val datumColor = currentTint.copy(alpha = 0.25f)
+                val datumStroke = 0.75.dp.toPx()
+                val curveStroke = Stroke(
+                    width = 1.75.dp.toPx(),
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                )
+                val peakRadius = 1.9.dp.toPx()
 
-        val xs = FloatArray(EQ_BAND_COUNT) { i ->
-            padX + (i / (EQ_BAND_COUNT - 1).toFloat()) * plotW
-        }
-        val ys = FloatArray(EQ_BAND_COUNT) { i ->
-            dbToY(curveDb[i])
-        }
+                onDrawBehind {
+                    if (w <= 2f || h <= 2f) return@onDrawBehind
 
-        buildCatmullRomPath(
-            xs = xs,
-            ys = ys,
-            minY = padY,
-            maxY = h - padY,
-            outPath = curvePath,
-        )
-
-        fillPath.reset()
-        fillPath.addPath(curvePath)
-        fillPath.lineTo(xs[EQ_BAND_COUNT - 1], zeroY)
-        fillPath.lineTo(xs[0], zeroY)
-        fillPath.close()
-
-        drawPath(
-            path = fillPath,
-            brush = Brush.verticalGradient(
-                colors = listOf(
-                    tint.copy(alpha = 0.24f),
-                    Color.Transparent,
-                ),
-                startY = padY,
-                endY = h - padY,
-            ),
-        )
-
-        drawPath(
-            path = curvePath,
-            color = tint,
-            style = Stroke(
-                width = 1.75.dp.toPx(),
-                cap = StrokeCap.Round,
-                join = StrokeJoin.Round,
-            ),
-        )
-
-        // Subtle peak marker dot to reinforce each mode's sonic signature
-        var peakIdx = 0
-        var bestAbs = -1f
-        for (i in 0 until EQ_BAND_COUNT) {
-            val mag = abs(curveDb[i])
-            if (mag > bestAbs) {
-                bestAbs = mag
-                peakIdx = i
-            }
-        }
-        drawCircle(
-            color = tint,
-            radius = 1.9.dp.toPx(),
-            center = Offset(xs[peakIdx], ys[peakIdx]),
-        )
-    }
+                    drawLine(
+                        color = datumColor,
+                        start = Offset(padX, zeroY),
+                        end = Offset(w - padX, zeroY),
+                        strokeWidth = datumStroke,
+                    )
+                    drawPath(path = fillPath, brush = fillBrush)
+                    drawPath(path = curvePath, color = currentTint, style = curveStroke)
+                    drawCircle(color = currentTint, radius = peakRadius, center = peakCenter)
+                }
+            },
+    )
 }
 
 @Composable

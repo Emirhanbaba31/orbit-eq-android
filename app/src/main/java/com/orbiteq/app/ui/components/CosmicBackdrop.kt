@@ -14,16 +14,19 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -109,18 +112,19 @@ fun CosmicBackdrop(
     val reducedMotion = rememberReducedMotionEnabled()
 
     val targetNebula = colors.modeTint(activeMode)
-    val animatedNebula by animateColorAsState(
+    val animatedNebulaState = animateColorAsState(
         targetValue = targetNebula,
         animationSpec = if (reducedMotion) snap() else tween(durationMillis = 550),
         label = "cosmicNebulaTint",
     )
-    val powerFactor by animateFloatAsState(
+    val powerFactorState = animateFloatAsState(
         targetValue = if (powerEnabled) 1f else 0.35f,
         animationSpec = if (reducedMotion) snap() else tween(durationMillis = 450),
         label = "cosmicPowerFactor",
     )
 
-    val driftPhase = if (powerEnabled && !reducedMotion) {
+    // Keep State<Float> un-read in composition so 60fps star drift invalidates ONLY Draw.
+    val driftPhaseState: State<Float>? = if (powerEnabled && !reducedMotion) {
         val transition = rememberInfiniteTransition(label = "cosmicStarDrift")
         transition.animateFloat(
             initialValue = 0f,
@@ -130,115 +134,149 @@ fun CosmicBackdrop(
                 repeatMode = RepeatMode.Restart,
             ),
             label = "driftPhase",
-        ).value
+        )
     } else {
-        0f
+        null
     }
 
+    val colorsState = rememberUpdatedState(colors)
+    val themeModeState = rememberUpdatedState(themeMode)
+    val powerEnabledState = rememberUpdatedState(powerEnabled)
+    val reducedMotionState = rememberUpdatedState(reducedMotion)
     val stars = remember { generateDeterministicStarfield(count = 76) }
 
-    Canvas(modifier = modifier.fillMaxSize()) {
-        val width = size.width
-        val height = size.height
-        if (width <= 0f || height <= 0f) return@Canvas
+    Spacer(
+        modifier = modifier
+            .fillMaxSize()
+            .drawWithCache {
+                val width = size.width
+                val height = size.height
+                val currentColors = colorsState.value
+                val currentTheme = themeModeState.value
+                val nebula = animatedNebulaState.value
+                val pFactor = powerFactorState.value
 
-        // Layer 1: True OLED / Void Black base
-        drawRect(color = colors.background)
+                val maxDim = max(width, height).coerceAtLeast(1f)
+                val primaryCenter = Offset(width * 0.52f, height * 0.19f)
+                val primaryRadius = maxDim * 0.62f
+                val secondaryCenter = Offset(width * 0.86f, height * 0.68f)
+                val secondaryRadius = maxDim * 0.45f
+                val lunarCenter = Offset(width * 0.5f, height * 0.18f)
+                val lunarRadius = maxDim * 0.52f
 
-        // Layer 2: Mode-tinted atmospheric nebula radial glows
-        val maxDim = max(width, height)
-        if (themeMode == OrbitThemeMode.DEEP_SPACE_HUD) {
-            val primaryCenter = Offset(width * 0.52f, height * 0.19f)
-            drawCircle(
-                brush = Brush.radialGradient(
+                val primaryNebulaBrush = Brush.radialGradient(
                     colors = listOf(
-                        animatedNebula.copy(alpha = 0.17f * powerFactor),
-                        colors.deepAccent.copy(alpha = 0.08f * powerFactor),
+                        nebula.copy(alpha = 0.17f * pFactor),
+                        currentColors.deepAccent.copy(alpha = 0.08f * pFactor),
                         Color.Transparent,
                     ),
                     center = primaryCenter,
-                    radius = maxDim * 0.62f,
-                ),
-                center = primaryCenter,
-                radius = maxDim * 0.62f,
-            )
-
-            val secondaryCenter = Offset(width * 0.86f, height * 0.68f)
-            drawCircle(
-                brush = Brush.radialGradient(
+                    radius = primaryRadius,
+                )
+                val secondaryNebulaBrush = Brush.radialGradient(
                     colors = listOf(
-                        colors.ionAccent.copy(alpha = 0.08f * powerFactor),
+                        currentColors.ionAccent.copy(alpha = 0.08f * pFactor),
                         Color.Transparent,
                     ),
                     center = secondaryCenter,
-                    radius = maxDim * 0.45f,
-                ),
-                center = secondaryCenter,
-                radius = maxDim * 0.45f,
-            )
-        } else {
-            // Lunar Monochrome keeps Pure OLED Black and subtle neutral silver luminance only
-            val lunarCenter = Offset(width * 0.5f, height * 0.18f)
-            drawCircle(
-                brush = Brush.radialGradient(
+                    radius = secondaryRadius,
+                )
+                val lunarNebulaBrush = Brush.radialGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.055f * powerFactor),
+                        Color.White.copy(alpha = 0.055f * pFactor),
                         Color.Transparent,
                     ),
                     center = lunarCenter,
-                    radius = maxDim * 0.52f,
-                ),
-                center = lunarCenter,
-                radius = maxDim * 0.52f,
-            )
-        }
+                    radius = lunarRadius,
+                )
 
-        // Layer 3: Subtle concentric aerospace HUD orbital reticles
-        val reticleCenter = Offset(width * 0.5f, height * 0.24f)
-        val reticleStroke = Stroke(width = 0.85.dp.toPx())
-        val reticleAlpha = if (themeMode == OrbitThemeMode.DEEP_SPACE_HUD) 0.06f * powerFactor else 0.05f * powerFactor
-        val reticleColor = if (themeMode == OrbitThemeMode.DEEP_SPACE_HUD) {
-            colors.ionAccent.copy(alpha = reticleAlpha)
-        } else {
-            Color.White.copy(alpha = reticleAlpha)
-        }
-        drawCircle(
-            color = reticleColor,
-            radius = width * 0.44f,
-            center = reticleCenter,
-            style = reticleStroke,
-        )
-        drawCircle(
-            color = reticleColor.copy(alpha = reticleAlpha * 0.7f),
-            radius = width * 0.72f,
-            center = reticleCenter,
-            style = reticleStroke,
-        )
+                val reticleCenter = Offset(width * 0.5f, height * 0.24f)
+                val reticleStroke = Stroke(width = 0.85.dp.toPx())
+                val reticleAlpha = if (currentTheme == OrbitThemeMode.DEEP_SPACE_HUD) {
+                    0.06f * pFactor
+                } else {
+                    0.05f * pFactor
+                }
+                val reticleColorOuter = if (currentTheme == OrbitThemeMode.DEEP_SPACE_HUD) {
+                    currentColors.ionAccent.copy(alpha = reticleAlpha)
+                } else {
+                    Color.White.copy(alpha = reticleAlpha)
+                }
+                val reticleColorInner = reticleColorOuter.copy(alpha = reticleAlpha * 0.7f)
+                val starRadiiPx = FloatArray(stars.size) { idx -> stars[idx].radiusDp.dp.toPx() }
+                val twoPi = (2.0 * PI).toFloat()
 
-        // Layer 4: Multi-depth parallax starfield (integer step/cycle multipliers ensure seamless loop wrap)
-        val twoPi = (2.0 * PI).toFloat()
-        for (i in stars.indices) {
-            val star = stars[i]
-            val yWrapped = ((star.yNorm - driftPhase * star.depthSteps) % 1f + 1f) % 1f
-            val xWrapped = ((star.xNorm + driftPhase * (if (star.depthSteps >= 3) 1f else 0f)) % 1f + 1f) % 1f
-            val twinkleWave = if (powerEnabled && !reducedMotion) {
-                0.72f + 0.28f * sin(twoPi * (driftPhase * star.twinkleCycles + star.twinklePhaseOffset))
-            } else {
-                0.85f
-            }
-            val starAlpha = (star.baseAlpha * twinkleWave * (0.55f + 0.45f * powerFactor)).coerceIn(0f, 1f)
-            val starColor = if (star.tintedByMode && themeMode == OrbitThemeMode.DEEP_SPACE_HUD) {
-                animatedNebula.copy(alpha = starAlpha)
-            } else {
-                colors.textPrimary.copy(alpha = starAlpha)
-            }
-            drawCircle(
-                color = starColor,
-                radius = star.radiusDp.dp.toPx(),
-                center = Offset(xWrapped * width, yWrapped * height),
-            )
-        }
-    }
+                onDrawBehind {
+                    if (width <= 0f || height <= 0f) return@onDrawBehind
+
+                    val driftPhase = driftPhaseState?.value ?: 0f
+                    val isPowered = powerEnabledState.value
+                    val isReduced = reducedMotionState.value
+
+                    // Layer 1: True OLED / Void Black base
+                    drawRect(color = currentColors.background)
+
+                    // Layer 2: Cached mode-tinted atmospheric nebula radial glows
+                    if (currentTheme == OrbitThemeMode.DEEP_SPACE_HUD) {
+                        drawCircle(
+                            brush = primaryNebulaBrush,
+                            center = primaryCenter,
+                            radius = primaryRadius,
+                        )
+                        drawCircle(
+                            brush = secondaryNebulaBrush,
+                            center = secondaryCenter,
+                            radius = secondaryRadius,
+                        )
+                    } else {
+                        drawCircle(
+                            brush = lunarNebulaBrush,
+                            center = lunarCenter,
+                            radius = lunarRadius,
+                        )
+                    }
+
+                    // Layer 3: Subtle concentric aerospace HUD orbital reticles
+                    drawCircle(
+                        color = reticleColorOuter,
+                        radius = width * 0.44f,
+                        center = reticleCenter,
+                        style = reticleStroke,
+                    )
+                    drawCircle(
+                        color = reticleColorInner,
+                        radius = width * 0.72f,
+                        center = reticleCenter,
+                        style = reticleStroke,
+                    )
+
+                    // Layer 4: Multi-depth parallax starfield (zero allocations per frame)
+                    val twinkleActive = isPowered && !isReduced
+                    val powerBrightness = 0.55f + 0.45f * pFactor
+                    for (i in stars.indices) {
+                        val star = stars[i]
+                        val yWrapped = ((star.yNorm - driftPhase * star.depthSteps) % 1f + 1f) % 1f
+                        val xWrapped = ((star.xNorm + driftPhase * (if (star.depthSteps >= 3) 1f else 0f)) % 1f + 1f) % 1f
+                        val twinkleWave = if (twinkleActive) {
+                            0.72f + 0.28f * sin(twoPi * (driftPhase * star.twinkleCycles + star.twinklePhaseOffset))
+                        } else {
+                            0.85f
+                        }
+                        val starAlpha = (star.baseAlpha * twinkleWave * powerBrightness).coerceIn(0f, 1f)
+                        val starColor = if (star.tintedByMode && currentTheme == OrbitThemeMode.DEEP_SPACE_HUD) {
+                            nebula.copy(alpha = starAlpha)
+                        } else {
+                            currentColors.textPrimary.copy(alpha = starAlpha)
+                        }
+                        drawCircle(
+                            color = starColor,
+                            radius = starRadiiPx[i],
+                            center = Offset(xWrapped * width, yWrapped * height),
+                        )
+                    }
+                }
+            },
+    )
 }
 
 private fun generateDeterministicStarfield(count: Int): List<StarNode> {
