@@ -6,6 +6,7 @@ import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import com.orbiteq.app.dsp.EqEngineFrame
 import com.orbiteq.app.dsp.PleasureProfiles
+import com.orbiteq.app.model.DeEsserMode
 import com.orbiteq.app.model.DspBackend
 import com.orbiteq.app.model.MbcMode
 import kotlin.math.abs
@@ -16,12 +17,22 @@ interface DspSessionHandle {
     val backend: DspBackend
     val sessionId: Int
     val preEqBandCount: Int
-    fun apply(frame: EqEngineFrame, mbcMode: MbcMode, active: Boolean)
+    val mbcBandCount: Int
+    fun apply(
+        frame: EqEngineFrame,
+        mbcMode: MbcMode,
+        deEsserMode: DeEsserMode = DeEsserMode.OFF,
+        active: Boolean,
+    )
     fun release()
 }
 
 interface DspBackendFactory {
-    fun createDynamicsProcessing(sessionId: Int, preEqBandCount: Int): DspSessionHandle
+    fun createDynamicsProcessing(
+        sessionId: Int,
+        preEqBandCount: Int,
+        mbcBandCount: Int = DspEffectController.HIGH_RES_MBC_BAND_COUNT,
+    ): DspSessionHandle
     fun createLegacyEqualizer(sessionId: Int): DspSessionHandle
 }
 
@@ -44,6 +55,10 @@ class DspEffectController(
         private set
 
     @Volatile
+    var currentMbcBandCount: Int = 0
+        private set
+
+    @Volatile
     var isRampActive: Boolean = false
         private set
 
@@ -58,18 +73,38 @@ class DspEffectController(
         currentBackend = handle?.backend ?: DspBackend.NONE
         currentSessionId = handle?.sessionId ?: 0
         currentPreEqBandCount = handle?.preEqBandCount ?: 0
+        currentMbcBandCount = handle?.mbcBandCount ?: 0
         smoother.reset()
         isRampActive = false
         return currentBackend
     }
 
     @Synchronized
-    fun apply(frame: EqEngineFrame, mbcMode: MbcMode, active: Boolean) {
+    fun apply(
+        frame: EqEngineFrame,
+        mbcMode: MbcMode,
+        deEsserMode: DeEsserMode = DeEsserMode.OFF,
+        active: Boolean,
+    ) {
         val handle = activeHandle ?: return
-        val smoothed = smoother.step(frame, active)
+        val isMatchedBypass = !active &&
+            frame.bypassMatchGainDb.isFinite() &&
+            frame.bypassMatchGainDb < BYPASS_MATCH_ACTIVATION_THRESHOLD_DB
+        val smoothed = smoother.step(
+            targetFrame = frame,
+            active = active,
+            matchedBypass = isMatchedBypass,
+        )
         isRampActive = smoothed.isRampActive
+        val effectiveMbcMode = if (isMatchedBypass) MbcMode.OFF else mbcMode
+        val effectiveDeEsserMode = if (isMatchedBypass) DeEsserMode.OFF else deEsserMode
         try {
-            handle.apply(smoothed.frame, mbcMode, smoothed.effectiveActive)
+            handle.apply(
+                frame = smoothed.frame,
+                mbcMode = effectiveMbcMode,
+                deEsserMode = effectiveDeEsserMode,
+                active = smoothed.effectiveActive,
+            )
         } catch (_: RuntimeException) {
             release()
         }
@@ -82,6 +117,7 @@ class DspEffectController(
         currentBackend = DspBackend.NONE
         currentSessionId = 0
         currentPreEqBandCount = 0
+        currentMbcBandCount = 0
         smoother.reset()
         isRampActive = false
         if (existing != null) {
@@ -94,11 +130,11 @@ class DspEffectController(
     }
 
     private fun attachWithFallback(sessionId: Int): DspSessionHandle? {
-        for (bandCount in PRE_EQ_CANDIDATE_COUNTS) {
+        for ((preEqBands, mbcBands) in DP_CANDIDATE_CONFIGS) {
             try {
-                return factory.createDynamicsProcessing(sessionId, bandCount)
+                return factory.createDynamicsProcessing(sessionId, preEqBands, mbcBands)
             } catch (_: RuntimeException) {
-                // Fall through to 10-band DynamicsProcessing or legacy Equalizer.
+                // Fall through to 10/4 DynamicsProcessing or legacy Equalizer.
             }
         }
         return try {
@@ -111,9 +147,12 @@ class DspEffectController(
     companion object {
         const val HIGH_RES_PRE_EQ_BAND_COUNT = 31
         const val STANDARD_PRE_EQ_BAND_COUNT = 10
-        private val PRE_EQ_CANDIDATE_COUNTS = intArrayOf(
-            HIGH_RES_PRE_EQ_BAND_COUNT,
-            STANDARD_PRE_EQ_BAND_COUNT,
+        const val HIGH_RES_MBC_BAND_COUNT = 5
+        const val STANDARD_MBC_BAND_COUNT = 4
+        internal const val BYPASS_MATCH_ACTIVATION_THRESHOLD_DB = -0.05f
+        private val DP_CANDIDATE_CONFIGS = arrayOf(
+            HIGH_RES_PRE_EQ_BAND_COUNT to HIGH_RES_MBC_BAND_COUNT,
+            STANDARD_PRE_EQ_BAND_COUNT to STANDARD_MBC_BAND_COUNT,
         )
 
         internal fun effectiveChannelInputGains(frame: EqEngineFrame): Pair<Float, Float> {
@@ -134,6 +173,7 @@ internal data class SmoothedFrameResult(
 internal class DspGainSmoother {
 
     private var bypassRamp: Float = 0f
+    private var eqRamp: Float = 0f
     private val currentPreEq31 = FloatArray(PRE_EQ_31_BAND_COUNT)
     private val currentPreEq10 = FloatArray(BAND_COUNT_10)
     private val currentPostEq10 = FloatArray(BAND_COUNT_10)
@@ -144,6 +184,7 @@ internal class DspGainSmoother {
 
     fun reset() {
         bypassRamp = 0f
+        eqRamp = 0f
         currentPreEq31.fill(0f)
         currentPreEq10.fill(0f)
         currentPostEq10.fill(0f)
@@ -153,15 +194,27 @@ internal class DspGainSmoother {
         currentRightTrimDb = 0f
     }
 
-    fun step(targetFrame: EqEngineFrame, active: Boolean): SmoothedFrameResult {
-        val prevRamp = bypassRamp
-        bypassRamp = if (active) {
-            (prevRamp + RAMP_STEP).coerceIn(0f, 1f)
+    fun step(
+        targetFrame: EqEngineFrame,
+        active: Boolean,
+        matchedBypass: Boolean = false,
+    ): SmoothedFrameResult {
+        val isEngaged = active || matchedBypass
+        val prevBypassRamp = bypassRamp
+        bypassRamp = if (isEngaged) {
+            (prevBypassRamp + RAMP_STEP).coerceIn(0f, 1f)
         } else {
-            (prevRamp - RAMP_STEP).coerceIn(0f, 1f)
+            (prevBypassRamp - RAMP_STEP).coerceIn(0f, 1f)
         }
 
-        if (!active && bypassRamp <= RAMP_DISABLE_THRESHOLD) {
+        val prevEqRamp = eqRamp
+        eqRamp = if (active) {
+            (prevEqRamp + RAMP_STEP).coerceIn(0f, 1f)
+        } else {
+            (prevEqRamp - RAMP_STEP).coerceIn(0f, 1f)
+        }
+
+        if (!isEngaged && bypassRamp <= RAMP_DISABLE_THRESHOLD) {
             reset()
             return SmoothedFrameResult(
                 frame = targetFrame.copy(
@@ -172,6 +225,7 @@ internal class DspGainSmoother {
                     preEq31Db = FloatArray(PRE_EQ_31_BAND_COUNT),
                     leftBalanceTrimDb = 0f,
                     rightBalanceTrimDb = 0f,
+                    totalEq31Db = FloatArray(PRE_EQ_31_BAND_COUNT),
                 ),
                 effectiveActive = false,
                 isRampActive = false,
@@ -179,23 +233,63 @@ internal class DspGainSmoother {
         }
 
         // Fade out proportionally from current smoothed state so pre-zeroed bypass frames still ramp smoothly.
-        val fadeScale = if (!active && prevRamp > RAMP_DISABLE_THRESHOLD) {
-            (bypassRamp / prevRamp).coerceIn(0f, 1f)
+        val rawFadeScale = if (!isEngaged && prevBypassRamp > RAMP_DISABLE_THRESHOLD) {
+            (bypassRamp / prevBypassRamp).coerceIn(0f, 1f)
         } else {
             1f
         }
 
-        var needsAnotherTick = if (active) {
-            bypassRamp < RAMP_SETTLED_THRESHOLD
+        // Fade EQ down proportionally during matched bypass while holding inputGain attenuation active.
+        val eqFadeOutScale = if (
+            !active &&
+            matchedBypass &&
+            prevEqRamp > RAMP_DISABLE_THRESHOLD &&
+            eqRamp > RAMP_DISABLE_THRESHOLD
+        ) {
+            (eqRamp / prevEqRamp).coerceIn(0f, 1f)
         } else {
-            true
+            1f
         }
 
-        fun slewScalar(current: Float, rawTarget: Float): Float {
-            if (!active) {
-                return current * fadeScale
+        var needsAnotherTick = when {
+            active -> bypassRamp < RAMP_SETTLED_THRESHOLD || eqRamp < RAMP_SETTLED_THRESHOLD
+            matchedBypass -> bypassRamp < RAMP_SETTLED_THRESHOLD || eqRamp > RAMP_DISABLE_THRESHOLD
+            else -> true
+        }
+
+        fun stepEqScalar(current: Float, rawTarget: Float): Float {
+            if (!isEngaged) {
+                return current * rawFadeScale
             }
-            val desired = sanitizeDb(rawTarget) * bypassRamp
+            if (!active) {
+                return if (eqRamp > RAMP_DISABLE_THRESHOLD && prevEqRamp > RAMP_DISABLE_THRESHOLD) {
+                    current * eqFadeOutScale
+                } else {
+                    val next = slewToward(current, 0f, MAX_SLEW_STEP_DB)
+                    if (abs(next) > SETTLE_EPSILON_DB) {
+                        needsAnotherTick = true
+                    }
+                    next
+                }
+            }
+            val desired = sanitizeDb(rawTarget) * eqRamp
+            val next = slewToward(current, desired, MAX_SLEW_STEP_DB)
+            if (abs(next - desired) > SETTLE_EPSILON_DB) {
+                needsAnotherTick = true
+            }
+            return next
+        }
+
+        fun stepInputGain(current: Float, rawTarget: Float): Float {
+            if (!isEngaged) {
+                return current * rawFadeScale
+            }
+            val targetGain = if (active) {
+                sanitizeDb(rawTarget)
+            } else {
+                sanitizeDb(targetFrame.bypassMatchGainDb).coerceAtMost(0f)
+            }
+            val desired = targetGain * bypassRamp
             val next = slewToward(current, desired, MAX_SLEW_STEP_DB)
             if (abs(next - desired) > SETTLE_EPSILON_DB) {
                 needsAnotherTick = true
@@ -205,7 +299,7 @@ internal class DspGainSmoother {
 
         fun slewArray(current: FloatArray, target: FloatArray, count: Int): FloatArray {
             for (i in 0 until count) {
-                current[i] = slewScalar(current[i], target.getOrElse(i) { 0f })
+                current[i] = stepEqScalar(current[i], target.getOrElse(i) { 0f })
             }
             return current.copyOf()
         }
@@ -214,9 +308,9 @@ internal class DspGainSmoother {
         val outPre10 = slewArray(currentPreEq10, targetFrame.preEqDb, BAND_COUNT_10)
         val outPost10 = slewArray(currentPostEq10, targetFrame.postEqDb, BAND_COUNT_10)
         val outTotal10 = slewArray(currentTotalEq10, targetFrame.totalEqDb, BAND_COUNT_10)
-        currentInputGainDb = slewScalar(currentInputGainDb, targetFrame.inputGainDb)
-        currentLeftTrimDb = slewScalar(currentLeftTrimDb, targetFrame.leftBalanceTrimDb)
-        currentRightTrimDb = slewScalar(currentRightTrimDb, targetFrame.rightBalanceTrimDb)
+        currentInputGainDb = stepInputGain(currentInputGainDb, targetFrame.inputGainDb)
+        currentLeftTrimDb = stepEqScalar(currentLeftTrimDb, targetFrame.leftBalanceTrimDb)
+        currentRightTrimDb = stepEqScalar(currentRightTrimDb, targetFrame.rightBalanceTrimDb)
 
         return SmoothedFrameResult(
             frame = targetFrame.copy(
@@ -249,7 +343,7 @@ internal class DspGainSmoother {
         const val RAMP_DISABLE_THRESHOLD = 0.01f
         const val RAMP_SETTLED_THRESHOLD = 0.999f
         const val MAX_SLEW_STEP_DB = 3.0f
-        const val SETTLE_EPSILON_DB = 1e-4f
+        const val SETTLE_EPSILON_DB = 0.02f
     }
 }
 
@@ -283,6 +377,7 @@ internal class DspDirtyTracker(
     private var lastLeftInputGainDb = Float.NaN
     private var lastRightInputGainDb = Float.NaN
     private var lastMbcMode: MbcMode? = null
+    private var lastDeEsserMode: DeEsserMode? = null
     private var lastEnabled: Boolean? = null
 
     // Tiny IEEE-754 guard ensures exact 0.05 dB steps like 1.0f -> 1.05f do not miss the threshold.
@@ -294,6 +389,7 @@ internal class DspDirtyTracker(
         leftInputGainDb: Float,
         rightInputGainDb: Float,
         mbcMode: MbcMode,
+        deEsserMode: DeEsserMode = DeEsserMode.OFF,
         active: Boolean,
     ): DynamicsWritePlan {
         if (!active) {
@@ -316,7 +412,7 @@ internal class DspDirtyTracker(
                 abs(rightInputGainDb - lastRightInputGainDb) >= effectiveThreshold,
             writePreEq = !hasPreEqWritten || arrayDiffers(preEq, lastPreEq, preEqBandCount),
             writePostEq = !hasPostEqWritten || arrayDiffers(postEq, lastPostEq, postEqBandCount),
-            writeMbc = lastMbcMode != mbcMode,
+            writeMbc = lastMbcMode != mbcMode || lastDeEsserMode != deEsserMode,
         )
     }
 
@@ -342,8 +438,9 @@ internal class DspDirtyTracker(
         hasPostEqWritten = true
     }
 
-    fun markMbcWritten(mbcMode: MbcMode) {
+    fun markMbcWritten(mbcMode: MbcMode, deEsserMode: DeEsserMode = DeEsserMode.OFF) {
         lastMbcMode = mbcMode
+        lastDeEsserMode = deEsserMode
     }
 
     fun markEnabledWritten(enabled: Boolean) {
@@ -356,14 +453,23 @@ internal class DspDirtyTracker(
         leftInputGainDb: Float,
         rightInputGainDb: Float,
         mbcMode: MbcMode,
+        deEsserMode: DeEsserMode = DeEsserMode.OFF,
         active: Boolean,
     ): DynamicsWritePlan {
-        val plan = evaluate(preEq, postEq, leftInputGainDb, rightInputGainDb, mbcMode, active)
+        val plan = evaluate(
+            preEq = preEq,
+            postEq = postEq,
+            leftInputGainDb = leftInputGainDb,
+            rightInputGainDb = rightInputGainDb,
+            mbcMode = mbcMode,
+            deEsserMode = deEsserMode,
+            active = active,
+        )
         if (plan.writeLeftInputGain) markLeftInputGainWritten(leftInputGainDb)
         if (plan.writeRightInputGain) markRightInputGainWritten(rightInputGainDb)
         if (plan.writePreEq) markPreEqWritten(preEq)
         if (plan.writePostEq) markPostEqWritten(postEq)
-        if (plan.writeMbc) markMbcWritten(mbcMode)
+        if (plan.writeMbc) markMbcWritten(mbcMode, deEsserMode)
         if (plan.writeEnabled) markEnabledWritten(plan.targetEnabled)
         return plan
     }
@@ -441,35 +547,93 @@ internal data class MbcProfileConfig(
     val enabled: Boolean,
     val ratios: FloatArray,
     val thresholdsDb: FloatArray,
-    val kneeDb: Float,
+    val kneesDb: FloatArray,
     val attacksMs: FloatArray,
     val releasesMs: FloatArray,
-)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is MbcProfileConfig) return false
+        return enabled == other.enabled &&
+            ratios.contentEquals(other.ratios) &&
+            thresholdsDb.contentEquals(other.thresholdsDb) &&
+            kneesDb.contentEquals(other.kneesDb) &&
+            attacksMs.contentEquals(other.attacksMs) &&
+            releasesMs.contentEquals(other.releasesMs)
+    }
+
+    override fun hashCode(): Int {
+        var result = enabled.hashCode()
+        result = 31 * result + ratios.contentHashCode()
+        result = 31 * result + thresholdsDb.contentHashCode()
+        result = 31 * result + kneesDb.contentHashCode()
+        result = 31 * result + attacksMs.contentHashCode()
+        result = 31 * result + releasesMs.contentHashCode()
+        return result
+    }
+}
 
 object AndroidDspBackendFactory : DspBackendFactory {
 
     private const val EFFECT_PRIORITY = 0
     private const val CHANNEL_COUNT = 2
     private const val POST_EQ_BAND_COUNT = 10
-    private const val MBC_BAND_COUNT = 4
+    private const val DE_ESSER_BAND_INDEX = 3
 
     // Upper band edges centered geometrically around ISO_FREQUENCIES_HZ (31..16000 Hz)
     private val EQ_UPPER_CUTOFFS_HZ = floatArrayOf(
         44f, 88f, 177f, 355f, 707f, 1414f, 2828f, 5657f, 11314f, 20000f,
     )
-    private val MBC_CUTOFFS_HZ = floatArrayOf(180f, 800f, 4000f, 20000f)
+    internal val MBC_5_CUTOFFS_HZ = floatArrayOf(180f, 800f, 3500f, 9500f, 20000f)
+    internal val MBC_4_CUTOFFS_HZ = floatArrayOf(180f, 800f, 4000f, 20000f)
 
-    private val SUBTLE_RATIOS = floatArrayOf(1.45f, 1.30f, 1.30f, 1.45f)
-    private val SUBTLE_THRESHOLDS_DB = floatArrayOf(-18f, -16f, -16f, -17f)
-    private const val SUBTLE_KNEE_DB = 8f
-    private val SUBTLE_ATTACKS_MS = floatArrayOf(25f, 18f, 14f, 12f)
-    private val SUBTLE_RELEASES_MS = floatArrayOf(140f, 120f, 100f, 90f)
+    private val OFF_5_RATIOS = floatArrayOf(1f, 1f, 1f, 1f, 1f)
+    private val OFF_5_THRESHOLDS_DB = floatArrayOf(0f, 0f, 0f, 0f, 0f)
+    private val OFF_5_KNEES_DB = floatArrayOf(0f, 0f, 0f, 0f, 0f)
+    private val OFF_5_ATTACKS_MS = floatArrayOf(20f, 20f, 20f, 20f, 20f)
+    private val OFF_5_RELEASES_MS = floatArrayOf(100f, 100f, 100f, 100f, 100f)
 
-    private val PUNCHY_RATIOS = floatArrayOf(2.0f, 1.65f, 1.65f, 2.0f)
-    private val PUNCHY_THRESHOLDS_DB = floatArrayOf(-15f, -13f, -13f, -14f)
-    private const val PUNCHY_KNEE_DB = 5f
-    private val PUNCHY_ATTACKS_MS = floatArrayOf(18f, 14f, 10f, 9f)
-    private val PUNCHY_RELEASES_MS = floatArrayOf(110f, 95f, 85f, 75f)
+    private val SUBTLE_5_RATIOS = floatArrayOf(1.45f, 1.30f, 1.30f, 1.40f, 1.35f)
+    private val SUBTLE_5_THRESHOLDS_DB = floatArrayOf(-18f, -16f, -16f, -17f, -17f)
+    private val SUBTLE_5_KNEES_DB = floatArrayOf(8f, 8f, 8f, 8f, 8f)
+    private val SUBTLE_5_ATTACKS_MS = floatArrayOf(25f, 18f, 14f, 12f, 12f)
+    private val SUBTLE_5_RELEASES_MS = floatArrayOf(140f, 120f, 100f, 90f, 90f)
+
+    private val PUNCHY_5_RATIOS = floatArrayOf(2.0f, 1.65f, 1.65f, 1.85f, 1.70f)
+    private val PUNCHY_5_THRESHOLDS_DB = floatArrayOf(-15f, -13f, -13f, -14f, -14f)
+    private val PUNCHY_5_KNEES_DB = floatArrayOf(5f, 5f, 5f, 5f, 5f)
+    private val PUNCHY_5_ATTACKS_MS = floatArrayOf(18f, 14f, 10f, 9f, 9f)
+    private val PUNCHY_5_RELEASES_MS = floatArrayOf(110f, 95f, 85f, 75f, 75f)
+
+    private val OFF_4_RATIOS = floatArrayOf(1f, 1f, 1f, 1f)
+    private val OFF_4_THRESHOLDS_DB = floatArrayOf(0f, 0f, 0f, 0f)
+    private val OFF_4_KNEES_DB = floatArrayOf(0f, 0f, 0f, 0f)
+    private val OFF_4_ATTACKS_MS = floatArrayOf(20f, 20f, 20f, 20f)
+    private val OFF_4_RELEASES_MS = floatArrayOf(100f, 100f, 100f, 100f)
+
+    private val SUBTLE_4_RATIOS = floatArrayOf(1.45f, 1.30f, 1.30f, 1.45f)
+    private val SUBTLE_4_THRESHOLDS_DB = floatArrayOf(-18f, -16f, -16f, -17f)
+    private val SUBTLE_4_KNEES_DB = floatArrayOf(8f, 8f, 8f, 8f)
+    private val SUBTLE_4_ATTACKS_MS = floatArrayOf(25f, 18f, 14f, 12f)
+    private val SUBTLE_4_RELEASES_MS = floatArrayOf(140f, 120f, 100f, 90f)
+
+    private val PUNCHY_4_RATIOS = floatArrayOf(2.0f, 1.65f, 1.65f, 2.0f)
+    private val PUNCHY_4_THRESHOLDS_DB = floatArrayOf(-15f, -13f, -13f, -14f)
+    private val PUNCHY_4_KNEES_DB = floatArrayOf(5f, 5f, 5f, 5f)
+    private val PUNCHY_4_ATTACKS_MS = floatArrayOf(18f, 14f, 10f, 9f)
+    private val PUNCHY_4_RELEASES_MS = floatArrayOf(110f, 95f, 85f, 75f)
+
+    private const val DE_ESSER_GENTLE_RATIO = 2.4f
+    private const val DE_ESSER_GENTLE_THRESHOLD_DB = -20f
+    private const val DE_ESSER_GENTLE_KNEE_DB = 6f
+    private const val DE_ESSER_GENTLE_ATTACK_MS = 4f
+    private const val DE_ESSER_GENTLE_RELEASE_MS = 55f
+
+    private const val DE_ESSER_STRONG_RATIO = 3.6f
+    private const val DE_ESSER_STRONG_THRESHOLD_DB = -24f
+    private const val DE_ESSER_STRONG_KNEE_DB = 4f
+    private const val DE_ESSER_STRONG_ATTACK_MS = 2.5f
+    private const val DE_ESSER_STRONG_RELEASE_MS = 45f
 
     private const val MBC_NOISE_GATE_DB = -90f
     private const val MBC_EXPANDER_RATIO = 1.0f
@@ -480,47 +644,110 @@ object AndroidDspBackendFactory : DspBackendFactory {
     private const val LIMITER_RELEASE_MS = 60.0f
     private const val LIMITER_POST_GAIN_DB = 0.0f
 
-    internal fun mbcConfigFor(mode: MbcMode): MbcProfileConfig = when (mode) {
-        MbcMode.OFF -> MbcProfileConfig(
-            enabled = false,
-            ratios = SUBTLE_RATIOS,
-            thresholdsDb = SUBTLE_THRESHOLDS_DB,
-            kneeDb = SUBTLE_KNEE_DB,
-            attacksMs = SUBTLE_ATTACKS_MS,
-            releasesMs = SUBTLE_RELEASES_MS,
-        )
+    internal fun mbcConfigFor(
+        mbcMode: MbcMode,
+        deEsserMode: DeEsserMode = DeEsserMode.OFF,
+        mbcBandCount: Int = DspEffectController.HIGH_RES_MBC_BAND_COUNT,
+    ): MbcProfileConfig {
+        val useFiveBands = when (mbcBandCount) {
+            DspEffectController.HIGH_RES_MBC_BAND_COUNT -> true
+            DspEffectController.STANDARD_MBC_BAND_COUNT -> false
+            else -> throw IllegalArgumentException("Unsupported MBC band count: $mbcBandCount")
+        }
 
-        MbcMode.SUBTLE -> MbcProfileConfig(
-            enabled = true,
-            ratios = SUBTLE_RATIOS,
-            thresholdsDb = SUBTLE_THRESHOLDS_DB,
-            kneeDb = SUBTLE_KNEE_DB,
-            attacksMs = SUBTLE_ATTACKS_MS,
-            releasesMs = SUBTLE_RELEASES_MS,
-        )
+        val base = when {
+            useFiveBands && mbcMode == MbcMode.OFF -> MbcProfileConfig(
+                enabled = deEsserMode != DeEsserMode.OFF,
+                ratios = OFF_5_RATIOS.copyOf(),
+                thresholdsDb = OFF_5_THRESHOLDS_DB.copyOf(),
+                kneesDb = OFF_5_KNEES_DB.copyOf(),
+                attacksMs = OFF_5_ATTACKS_MS.copyOf(),
+                releasesMs = OFF_5_RELEASES_MS.copyOf(),
+            )
+            useFiveBands && mbcMode == MbcMode.SUBTLE -> MbcProfileConfig(
+                enabled = true,
+                ratios = SUBTLE_5_RATIOS.copyOf(),
+                thresholdsDb = SUBTLE_5_THRESHOLDS_DB.copyOf(),
+                kneesDb = SUBTLE_5_KNEES_DB.copyOf(),
+                attacksMs = SUBTLE_5_ATTACKS_MS.copyOf(),
+                releasesMs = SUBTLE_5_RELEASES_MS.copyOf(),
+            )
+            useFiveBands -> MbcProfileConfig(
+                enabled = true,
+                ratios = PUNCHY_5_RATIOS.copyOf(),
+                thresholdsDb = PUNCHY_5_THRESHOLDS_DB.copyOf(),
+                kneesDb = PUNCHY_5_KNEES_DB.copyOf(),
+                attacksMs = PUNCHY_5_ATTACKS_MS.copyOf(),
+                releasesMs = PUNCHY_5_RELEASES_MS.copyOf(),
+            )
+            mbcMode == MbcMode.OFF -> MbcProfileConfig(
+                enabled = deEsserMode != DeEsserMode.OFF,
+                ratios = OFF_4_RATIOS.copyOf(),
+                thresholdsDb = OFF_4_THRESHOLDS_DB.copyOf(),
+                kneesDb = OFF_4_KNEES_DB.copyOf(),
+                attacksMs = OFF_4_ATTACKS_MS.copyOf(),
+                releasesMs = OFF_4_RELEASES_MS.copyOf(),
+            )
+            mbcMode == MbcMode.SUBTLE -> MbcProfileConfig(
+                enabled = true,
+                ratios = SUBTLE_4_RATIOS.copyOf(),
+                thresholdsDb = SUBTLE_4_THRESHOLDS_DB.copyOf(),
+                kneesDb = SUBTLE_4_KNEES_DB.copyOf(),
+                attacksMs = SUBTLE_4_ATTACKS_MS.copyOf(),
+                releasesMs = SUBTLE_4_RELEASES_MS.copyOf(),
+            )
+            else -> MbcProfileConfig(
+                enabled = true,
+                ratios = PUNCHY_4_RATIOS.copyOf(),
+                thresholdsDb = PUNCHY_4_THRESHOLDS_DB.copyOf(),
+                kneesDb = PUNCHY_4_KNEES_DB.copyOf(),
+                attacksMs = PUNCHY_4_ATTACKS_MS.copyOf(),
+                releasesMs = PUNCHY_4_RELEASES_MS.copyOf(),
+            )
+        }
 
-        MbcMode.PUNCHY -> MbcProfileConfig(
-            enabled = true,
-            ratios = PUNCHY_RATIOS,
-            thresholdsDb = PUNCHY_THRESHOLDS_DB,
-            kneeDb = PUNCHY_KNEE_DB,
-            attacksMs = PUNCHY_ATTACKS_MS,
-            releasesMs = PUNCHY_RELEASES_MS,
-        )
+        // Override only Band 3 (3.5-9.5 kHz in 5-band mode) so Band 4 (9.5-20 kHz) air remains untouched.
+        when (deEsserMode) {
+            DeEsserMode.OFF -> Unit
+            DeEsserMode.GENTLE -> {
+                base.ratios[DE_ESSER_BAND_INDEX] = DE_ESSER_GENTLE_RATIO
+                base.thresholdsDb[DE_ESSER_BAND_INDEX] = DE_ESSER_GENTLE_THRESHOLD_DB
+                base.kneesDb[DE_ESSER_BAND_INDEX] = DE_ESSER_GENTLE_KNEE_DB
+                base.attacksMs[DE_ESSER_BAND_INDEX] = DE_ESSER_GENTLE_ATTACK_MS
+                base.releasesMs[DE_ESSER_BAND_INDEX] = DE_ESSER_GENTLE_RELEASE_MS
+            }
+            DeEsserMode.STRONG -> {
+                base.ratios[DE_ESSER_BAND_INDEX] = DE_ESSER_STRONG_RATIO
+                base.thresholdsDb[DE_ESSER_BAND_INDEX] = DE_ESSER_STRONG_THRESHOLD_DB
+                base.kneesDb[DE_ESSER_BAND_INDEX] = DE_ESSER_STRONG_KNEE_DB
+                base.attacksMs[DE_ESSER_BAND_INDEX] = DE_ESSER_STRONG_ATTACK_MS
+                base.releasesMs[DE_ESSER_BAND_INDEX] = DE_ESSER_STRONG_RELEASE_MS
+            }
+        }
+        return base
     }
 
-    override fun createDynamicsProcessing(sessionId: Int, preEqBandCount: Int): DspSessionHandle {
+    override fun createDynamicsProcessing(
+        sessionId: Int,
+        preEqBandCount: Int,
+        mbcBandCount: Int,
+    ): DspSessionHandle {
         val preCutoffs = when (preEqBandCount) {
             DspEffectController.HIGH_RES_PRE_EQ_BAND_COUNT -> PleasureProfiles.ISO_31_UPPER_CUTOFFS_HZ
             DspEffectController.STANDARD_PRE_EQ_BAND_COUNT -> EQ_UPPER_CUTOFFS_HZ
             else -> throw IllegalArgumentException("Unsupported PreEQ band count: $preEqBandCount")
         }
+        val mbcCutoffs = when (mbcBandCount) {
+            DspEffectController.HIGH_RES_MBC_BAND_COUNT -> MBC_5_CUTOFFS_HZ
+            DspEffectController.STANDARD_MBC_BAND_COUNT -> MBC_4_CUTOFFS_HZ
+            else -> throw IllegalArgumentException("Unsupported MBC band count: $mbcBandCount")
+        }
 
         val preEq = createIsoEqStage(preCutoffs)
         val postEq = createIsoEqStage(EQ_UPPER_CUTOFFS_HZ)
-        val mbcBands = createMbcBands(MbcMode.SUBTLE)
-        val mbc = DynamicsProcessing.Mbc(true, true, MBC_BAND_COUNT).apply {
-            for (i in 0 until MBC_BAND_COUNT) {
+        val mbcBands = createMbcBands(MbcMode.SUBTLE, DeEsserMode.OFF, mbcBandCount, mbcCutoffs)
+        val mbc = DynamicsProcessing.Mbc(true, true, mbcBandCount).apply {
+            for (i in 0 until mbcBandCount) {
                 setBand(i, mbcBands[i])
             }
         }
@@ -541,7 +768,7 @@ object AndroidDspBackendFactory : DspBackendFactory {
             true,
             preEqBandCount,
             true,
-            MBC_BAND_COUNT,
+            mbcBandCount,
             true,
             POST_EQ_BAND_COUNT,
             true,
@@ -556,7 +783,7 @@ object AndroidDspBackendFactory : DspBackendFactory {
         var dp: DynamicsProcessing? = null
         try {
             dp = DynamicsProcessing(EFFECT_PRIORITY, sessionId, config)
-            // Probe enablement up front so OEMs that reject 31-band or DP trigger fallback cleanly.
+            // Probe enablement up front so OEMs that reject 31/5 or DP trigger fallback cleanly.
             val probeStatus = dp.setEnabled(true)
             if (probeStatus != AudioEffect.SUCCESS) {
                 throw IllegalStateException("DynamicsProcessing enable probe failed with status $probeStatus")
@@ -566,6 +793,7 @@ object AndroidDspBackendFactory : DspBackendFactory {
                 dp = dp,
                 sessionId = sessionId,
                 preEqBandCount = preEqBandCount,
+                mbcBandCount = mbcBandCount,
                 preCutoffsHz = preCutoffs,
                 preEq = preEq,
                 postEq = postEq,
@@ -642,17 +870,22 @@ object AndroidDspBackendFactory : DspBackendFactory {
         return eq
     }
 
-    private fun createMbcBands(mode: MbcMode): Array<DynamicsProcessing.MbcBand> {
-        val profile = mbcConfigFor(mode)
-        return Array(MBC_BAND_COUNT) { i ->
+    private fun createMbcBands(
+        mbcMode: MbcMode,
+        deEsserMode: DeEsserMode,
+        mbcBandCount: Int,
+        mbcCutoffsHz: FloatArray,
+    ): Array<DynamicsProcessing.MbcBand> {
+        val profile = mbcConfigFor(mbcMode, deEsserMode, mbcBandCount)
+        return Array(mbcBandCount) { i ->
             DynamicsProcessing.MbcBand(
                 /* enabled = */ true,
-                /* cutoffFrequency = */ MBC_CUTOFFS_HZ[i],
+                /* cutoffFrequency = */ mbcCutoffsHz[i],
                 /* attackTime = */ profile.attacksMs[i],
                 /* releaseTime = */ profile.releasesMs[i],
                 /* ratio = */ profile.ratios[i],
                 /* threshold = */ profile.thresholdsDb[i],
-                /* kneeWidth = */ profile.kneeDb,
+                /* kneeWidth = */ profile.kneesDb[i],
                 /* noiseGateThreshold = */ MBC_NOISE_GATE_DB,
                 /* expanderRatio = */ MBC_EXPANDER_RATIO,
                 /* preGain = */ 0f,
@@ -665,6 +898,7 @@ object AndroidDspBackendFactory : DspBackendFactory {
         private val dp: DynamicsProcessing,
         override val sessionId: Int,
         override val preEqBandCount: Int,
+        override val mbcBandCount: Int,
         preCutoffsHz: FloatArray,
         private val preEq: DynamicsProcessing.Eq,
         private val postEq: DynamicsProcessing.Eq,
@@ -685,7 +919,12 @@ object AndroidDspBackendFactory : DspBackendFactory {
             postEqBandCount = POST_EQ_BAND_COUNT,
         )
 
-        override fun apply(frame: EqEngineFrame, mbcMode: MbcMode, active: Boolean) {
+        override fun apply(
+            frame: EqEngineFrame,
+            mbcMode: MbcMode,
+            deEsserMode: DeEsserMode,
+            active: Boolean,
+        ) {
             val preSource = if (preEqBandCount == DspEffectController.HIGH_RES_PRE_EQ_BAND_COUNT) {
                 frame.preEq31Db
             } else {
@@ -698,6 +937,7 @@ object AndroidDspBackendFactory : DspBackendFactory {
                 leftInputGainDb = leftInputGain,
                 rightInputGainDb = rightInputGain,
                 mbcMode = mbcMode,
+                deEsserMode = deEsserMode,
                 active = active,
             )
 
@@ -737,9 +977,9 @@ object AndroidDspBackendFactory : DspBackendFactory {
             }
 
             if (plan.writeMbc) {
-                applyMbcMode(mbcMode)
+                applyMbcMode(mbcMode, deEsserMode)
                 dp.setMbcAllChannelsTo(mbc)
-                dirtyTracker.markMbcWritten(mbcMode)
+                dirtyTracker.markMbcWritten(mbcMode, deEsserMode)
             }
 
             if (plan.writeEnabled) {
@@ -748,17 +988,17 @@ object AndroidDspBackendFactory : DspBackendFactory {
             }
         }
 
-        private fun applyMbcMode(mode: MbcMode) {
-            val profile = mbcConfigFor(mode)
+        private fun applyMbcMode(mbcMode: MbcMode, deEsserMode: DeEsserMode) {
+            val profile = mbcConfigFor(mbcMode, deEsserMode, mbcBandCount)
             mbc.isEnabled = profile.enabled
             if (profile.enabled) {
-                for (i in 0 until MBC_BAND_COUNT) {
+                for (i in 0 until mbcBandCount) {
                     mbcBands[i].apply {
                         attackTime = profile.attacksMs[i]
                         releaseTime = profile.releasesMs[i]
                         ratio = profile.ratios[i]
                         threshold = profile.thresholdsDb[i]
-                        kneeWidth = profile.kneeDb
+                        kneeWidth = profile.kneesDb[i]
                     }
                     mbc.setBand(i, mbcBands[i])
                 }
@@ -792,12 +1032,18 @@ object AndroidDspBackendFactory : DspBackendFactory {
 
         override val backend: DspBackend = DspBackend.LEGACY_EQ
         override val preEqBandCount: Int = bandCenterHz.size
+        override val mbcBandCount: Int = 0
 
         private val dirtyTracker = LegacyDirtyTracker(bandCount = bandCenterHz.size)
         private val targetBandsMb = IntArray(bandCenterHz.size)
         private var loudnessNeutralized = loudnessEnhancer == null
 
-        override fun apply(frame: EqEngineFrame, mbcMode: MbcMode, active: Boolean) {
+        override fun apply(
+            frame: EqEngineFrame,
+            mbcMode: MbcMode,
+            deEsserMode: DeEsserMode,
+            active: Boolean,
+        ) {
             if (!active) {
                 val plan = dirtyTracker.evaluate(targetBandsMb, active = false)
                 if (plan.writeEnabled) {

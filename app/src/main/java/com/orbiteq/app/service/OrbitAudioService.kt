@@ -352,10 +352,15 @@ class OrbitAudioService : Service() {
                             trueHeadroomMode = state.settings.trueHeadroomMode,
                             channelBalance = state.settings.channelBalance,
                             trackKey = trackKey,
+                            toneTiltDbPerOct = state.settings.toneTiltDbPerOct,
+                            deEsserMode = state.settings.deEsserMode,
+                            loudnessMatchedBypass = state.settings.loudnessMatchedBypass,
+                            isAutoBypassed = state.autoBypassedByRule,
                         )
                         dspController.apply(
                             frame = idleFrame,
                             mbcMode = state.settings.mbcMode,
+                            deEsserMode = state.settings.deEsserMode,
                             active = false,
                         )
                         visualizerController.stop()
@@ -441,11 +446,16 @@ class OrbitAudioService : Service() {
                             trueHeadroomMode = state.settings.trueHeadroomMode,
                             channelBalance = state.settings.channelBalance,
                             trackKey = trackKey,
+                            toneTiltDbPerOct = state.settings.toneTiltDbPerOct,
+                            deEsserMode = state.settings.deEsserMode,
+                            loudnessMatchedBypass = state.settings.loudnessMatchedBypass,
+                            isAutoBypassed = state.autoBypassedByRule,
                         )
 
                         dspController.apply(
                             frame = frame,
                             mbcMode = state.settings.mbcMode,
+                            deEsserMode = state.settings.deEsserMode,
                             active = !effectiveBypass,
                         )
 
@@ -478,6 +488,9 @@ class OrbitAudioService : Service() {
                                     dominantSpectralTag = frame.spectralTag,
                                     preEqBandCount = dspController.currentPreEqBandCount,
                                     activeCompensationName = activeCompensationName,
+                                    liveEqCurve31Db = if (effectiveBypass) ZERO_EQ_31 else frame.totalEq31Db.toList(),
+                                    bypassMatchGainDb = frame.bypassMatchGainDb,
+                                    mbcBandCount = dspController.currentMbcBandCount,
                                 ),
                             )
 
@@ -542,6 +555,9 @@ class OrbitAudioService : Service() {
         activeSessionId = 0,
         spectrumBins36 = ZERO_SPECTRUM_BINS,
         preEqBandCount = 0,
+        liveEqCurve31Db = ZERO_EQ_31,
+        bypassMatchGainDb = 0f,
+        mbcBandCount = 0,
     )
 
     private fun registerAudioDeviceMonitor() {
@@ -800,6 +816,7 @@ class OrbitAudioService : Service() {
         private const val STARTUP_POWER_GRACE_MS = 2500L
         private const val LIMITER_CEILING_DB = -0.5f
         private val ZERO_SPECTRUM_BINS = List(36) { 0f }
+        private val ZERO_EQ_31 = List(31) { 0f }
 
         private const val ACTION_VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION"
         private const val EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE"
