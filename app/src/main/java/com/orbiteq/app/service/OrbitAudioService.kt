@@ -842,15 +842,14 @@ class OrbitAudioService : Service() {
         }
 
         fun stopEngine(context: Context) {
-            val intent = Intent(context, OrbitAudioService::class.java)
-                .setAction(ACTION_STOP_ENGINE)
+            OrbitEngineRepository.setPowerEnabled(false)
             if (isRunning) {
+                val intent = Intent(context, OrbitAudioService::class.java)
+                    .setAction(ACTION_STOP_ENGINE)
                 try {
                     context.startService(intent)
                 } catch (_: RuntimeException) {
                 }
-            } else {
-                OrbitEngineRepository.setPowerEnabled(false)
             }
         }
     }

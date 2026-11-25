@@ -29,11 +29,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
@@ -47,6 +50,7 @@ object OrbitEngineRepository {
     private const val MAX_MACRO_DB = 8.0f
     private const val MAX_CUSTOM_HEADROOM_DB = 15.0f
     private const val SPECTRAL_TAG_STABLE_FRAMES = 5
+    private const val DEFAULT_INITIAL_LOAD_TIMEOUT_MS = 1500L
 
     private sealed interface SettingsCommand {
         data class Transform(val fn: (OrbitSettings) -> OrbitSettings) : SettingsCommand
@@ -65,6 +69,7 @@ object OrbitEngineRepository {
         val scope = CoroutineScope(SupervisorJob() + dispatcher)
         val settingsChannel = Channel<SettingsCommand>(Channel.UNLIMITED)
         val historyChannel = Channel<HistoryCommand>(Channel.UNLIMITED)
+        val initialSettingsLoaded = CompletableDeferred<Unit>()
     }
 
     private val initLock = Any()
@@ -128,10 +133,31 @@ object OrbitEngineRepository {
         historyDone.await()
     }
 
+    fun isInitialSettingsLoaded(): Boolean =
+        session?.initialSettingsLoaded?.let { it.isCompleted && !it.isCancelled } == true
+
+    suspend fun awaitInitialSettingsLoaded(timeoutMs: Long = DEFAULT_INITIAL_LOAD_TIMEOUT_MS): Boolean {
+        val activeSession = session ?: return false
+        val deferred = activeSession.initialSettingsLoaded
+        if (deferred.isCompleted) {
+            return !deferred.isCancelled
+        }
+        return try {
+            withTimeoutOrNull(timeoutMs) {
+                deferred.await()
+                true
+            } ?: false
+        } catch (ce: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            false
+        }
+    }
+
     private fun resetLocked(cancelExisting: Boolean) {
         val existing = session
         session = null
         if (cancelExisting && existing != null) {
+            existing.initialSettingsLoaded.cancel()
             existing.settingsChannel.close()
             existing.historyChannel.close()
             existing.scope.cancel()
@@ -174,14 +200,22 @@ object OrbitEngineRepository {
         }
 
         activeSession.scope.launch {
-            activeSession.gateway.settingsFlow.collect { persistedSettings ->
-                synchronized(stateLock) {
-                    if (pendingSettingsWrites.get() == 0) {
-                        _uiState.value = recomputeDerivedState(
-                            _uiState.value.copy(settings = persistedSettings),
-                        )
+            try {
+                activeSession.gateway.settingsFlow.collect { persistedSettings ->
+                    synchronized(stateLock) {
+                        if (pendingSettingsWrites.get() == 0) {
+                            _uiState.value = recomputeDerivedState(
+                                _uiState.value.copy(settings = persistedSettings),
+                            )
+                        }
                     }
+                    activeSession.initialSettingsLoaded.complete(Unit)
                 }
+            } catch (ce: CancellationException) {
+                activeSession.initialSettingsLoaded.cancel(ce)
+                throw ce
+            } catch (_: Throwable) {
+                activeSession.initialSettingsLoaded.cancel()
             }
         }
 

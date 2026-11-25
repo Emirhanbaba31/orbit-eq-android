@@ -10,6 +10,10 @@ import com.orbiteq.app.MainActivity
 import com.orbiteq.app.R
 import com.orbiteq.app.data.OrbitEngineRepository
 import com.orbiteq.app.model.EngineStatus
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class OrbitWidgetProvider : AppWidgetProvider() {
 
@@ -20,7 +24,23 @@ class OrbitWidgetProvider : AppWidgetProvider() {
     ) {
         val appContext = context.applicationContext
         OrbitEngineRepository.init(appContext)
-        updateWidgets(appContext, appWidgetManager, appWidgetIds)
+        if (OrbitEngineRepository.isInitialSettingsLoaded()) {
+            updateWidgets(appContext, appWidgetManager, appWidgetIds)
+            return
+        }
+        val pendingResult = goAsync()
+        if (pendingResult == null) {
+            updateWidgets(appContext, appWidgetManager, appWidgetIds)
+            return
+        }
+        widgetScope.launch {
+            try {
+                OrbitEngineRepository.awaitInitialSettingsLoaded(PREFS_LOAD_TIMEOUT_MS)
+                updateWidgets(appContext, appWidgetManager, appWidgetIds)
+            } finally {
+                pendingResult.finish()
+            }
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
@@ -30,7 +50,26 @@ class OrbitWidgetProvider : AppWidgetProvider() {
 
         val appContext = context.applicationContext
         OrbitEngineRepository.init(appContext)
+        if (OrbitEngineRepository.isInitialSettingsLoaded()) {
+            handleWidgetAction(appContext, action)
+            return
+        }
+        val pendingResult = goAsync()
+        if (pendingResult == null) {
+            handleWidgetAction(appContext, action)
+            return
+        }
+        widgetScope.launch {
+            try {
+                OrbitEngineRepository.awaitInitialSettingsLoaded(PREFS_LOAD_TIMEOUT_MS)
+                handleWidgetAction(appContext, action)
+            } finally {
+                pendingResult.finish()
+            }
+        }
+    }
 
+    private fun handleWidgetAction(appContext: Context, action: String) {
         when (action) {
             ACTION_WIDGET_TOGGLE_POWER -> {
                 val powerOn = OrbitEngineRepository.uiState.value.settings.powerEnabled
@@ -84,6 +123,9 @@ class OrbitWidgetProvider : AppWidgetProvider() {
         private const val REQ_TOGGLE_POWER = 201
         private const val REQ_TOGGLE_BYPASS = 202
         private const val REQ_NEXT_MODE = 203
+        private const val PREFS_LOAD_TIMEOUT_MS = 1500L
+
+        private val widgetScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         private const val COLOR_ION_CYAN = 0xFF38BDF8.toInt()
         private const val COLOR_TEXT_PRIMARY = 0xFFF8FAFC.toInt()

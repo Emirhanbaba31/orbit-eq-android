@@ -9,6 +9,15 @@ import android.service.quicksettings.TileService
 import com.orbiteq.app.MainActivity
 import com.orbiteq.app.R
 import com.orbiteq.app.data.OrbitEngineRepository
+import com.orbiteq.app.model.PleasureMode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 enum class TileClickDecision {
     START_ENGINE,
@@ -30,15 +39,68 @@ object TileActionPlanner {
 
 class OrbitQuickSettingsTileService : TileService() {
 
+    private data class TileDisplayState(
+        val powerEnabled: Boolean,
+        val manuallyBypassed: Boolean,
+        val autoBypassedByRule: Boolean,
+        val activeMode: PleasureMode,
+    )
+
+    private val tileScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var listeningJob: Job? = null
+    private var clickJob: Job? = null
+
     override fun onStartListening() {
         super.onStartListening()
         OrbitEngineRepository.init(applicationContext)
         syncTile()
+        listeningJob?.cancel()
+        listeningJob = tileScope.launch {
+            OrbitEngineRepository.uiState
+                .map { state ->
+                    TileDisplayState(
+                        powerEnabled = state.settings.powerEnabled,
+                        manuallyBypassed = state.settings.bypassed,
+                        autoBypassedByRule = state.autoBypassedByRule,
+                        activeMode = state.activeMode,
+                    )
+                }
+                .distinctUntilChanged()
+                .collect {
+                    syncTile()
+                }
+        }
+    }
+
+    override fun onStopListening() {
+        listeningJob?.cancel()
+        listeningJob = null
+        super.onStopListening()
+    }
+
+    override fun onDestroy() {
+        listeningJob?.cancel()
+        listeningJob = null
+        clickJob?.cancel()
+        clickJob = null
+        tileScope.cancel()
+        super.onDestroy()
     }
 
     override fun onClick() {
         super.onClick()
         OrbitEngineRepository.init(applicationContext)
+        if (OrbitEngineRepository.isInitialSettingsLoaded()) {
+            handleTileClick()
+        } else if (clickJob?.isActive != true) {
+            clickJob = tileScope.launch {
+                OrbitEngineRepository.awaitInitialSettingsLoaded(PREFS_LOAD_TIMEOUT_MS)
+                handleTileClick()
+            }
+        }
+    }
+
+    private fun handleTileClick() {
         val state = OrbitEngineRepository.uiState.value
         when (
             TileActionPlanner.decideAction(
@@ -130,5 +192,6 @@ class OrbitQuickSettingsTileService : TileService() {
 
     private companion object {
         const val REQ_START_ENGINE_ACTIVITY = 301
+        const val PREFS_LOAD_TIMEOUT_MS = 1500L
     }
 }

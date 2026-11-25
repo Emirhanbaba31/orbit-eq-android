@@ -18,6 +18,7 @@ import androidx.datastore.preferences.core.preferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -653,10 +654,52 @@ class OrbitEngineRepositoryTest {
         assertEquals(PleasureMode.HORIZON, (decodedRoundTrip as BackupImportResult.Success).payload.selectedMode)
     }
 
+    @Test
+    fun awaitInitialSettingsLoadedWaitsForPersistedEmissionAndUpdatesUiStateSynchronously() = runBlocking {
+        assertFalse(OrbitEngineRepository.isInitialSettingsLoaded())
+        assertFalse(OrbitEngineRepository.awaitInitialSettingsLoaded(timeoutMs = 20L))
+
+        val settingsGate = CompletableDeferred<Unit>()
+        val persisted = OrbitSettings(
+            powerEnabled = true,
+            bypassed = true,
+            selectedMode = PleasureMode.GRAVITY,
+            appRules = AppRuleResolver.defaultAppRules(),
+        )
+        val gateway = FakeOrbitPersistenceGateway(
+            initialSettings = persisted,
+            settingsEmissionGate = settingsGate,
+        )
+        OrbitEngineRepository.initForTesting(gateway)
+
+        assertFalse(OrbitEngineRepository.isInitialSettingsLoaded())
+        assertFalse(OrbitEngineRepository.awaitInitialSettingsLoaded(timeoutMs = 40L))
+        assertFalse(OrbitEngineRepository.uiState.value.settings.powerEnabled)
+
+        val waiter = async(Dispatchers.Default) {
+            OrbitEngineRepository.awaitInitialSettingsLoaded(timeoutMs = 1500L)
+        }
+        delay(25L)
+        assertFalse(waiter.isCompleted)
+
+        settingsGate.complete(Unit)
+        assertTrue(waiter.await())
+        assertTrue(OrbitEngineRepository.isInitialSettingsLoaded())
+
+        val loadedState = OrbitEngineRepository.uiState.value
+        assertTrue(loadedState.settings.powerEnabled)
+        assertTrue(loadedState.settings.bypassed)
+        assertEquals(PleasureMode.GRAVITY, loadedState.activeMode)
+
+        // Subsequent calls return true immediately without suspending on already-loaded session.
+        assertTrue(OrbitEngineRepository.awaitInitialSettingsLoaded(timeoutMs = 1L))
+    }
+
     private class FakeOrbitPersistenceGateway(
         initialSettings: OrbitSettings = OrbitSettings(appRules = AppRuleResolver.defaultAppRules()),
         initialHistory: List<TrackActivityEntry> = emptyList(),
         private val historyEmissionGate: CompletableDeferred<Unit>? = null,
+        private val settingsEmissionGate: CompletableDeferred<Unit>? = null,
         private val updateDelayMsProvider: (Int) -> Long = { 0L },
         private val onBeforeSettingsWrite: (Int) -> Unit = {},
     ) : OrbitPersistenceGateway {
@@ -668,7 +711,14 @@ class OrbitEngineRepositoryTest {
         private val writeSequence = AtomicInteger(0)
         val maxConcurrentSettingsWrites = AtomicInteger(0)
 
-        override val settingsFlow: Flow<OrbitSettings> = settingsState.asStateFlow()
+        override val settingsFlow: Flow<OrbitSettings> = if (settingsEmissionGate == null) {
+            settingsState.asStateFlow()
+        } else {
+            kotlinx.coroutines.flow.flow {
+                settingsEmissionGate.await()
+                settingsState.collect { emit(it) }
+            }
+        }
 
         override val historyFlow: Flow<List<TrackActivityEntry>> = if (historyEmissionGate == null) {
             historyBacking.asStateFlow()
