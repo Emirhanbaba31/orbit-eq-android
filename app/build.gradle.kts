@@ -1,8 +1,47 @@
+import java.io.File
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+
+fun resolveSigningValue(propKey: String, vararg envKeys: String): String? =
+    keystoreProperties.getProperty(propKey)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: envKeys.firstNotNullOfOrNull { key ->
+            System.getenv(key)?.trim()?.takeIf { it.isNotEmpty() }
+        }
+
+val releaseStorePath = resolveSigningValue("storeFile", "ORBIT_KEYSTORE_PATH", "ORBIT_KEYSTORE_FILE")
+val releaseStorePassword = resolveSigningValue("storePassword", "ORBIT_KEYSTORE_PASSWORD")
+val releaseKeyAlias = resolveSigningValue("keyAlias", "ORBIT_KEYSTORE_ALIAS", "ORBIT_KEY_ALIAS")
+val releaseKeyPassword = resolveSigningValue(
+    "keyPassword",
+    "ORBIT_KEYSTORE_KEY_PASSWORD",
+    "ORBIT_KEY_PASSWORD",
+) ?: releaseStorePassword
+
+val releaseStoreFile = releaseStorePath?.let { path ->
+    val direct = File(path)
+    when {
+        direct.isAbsolute -> direct
+        rootProject.file(path).exists() -> rootProject.file(path)
+        else -> file(path)
+    }
+}?.takeIf { it.exists() && it.isFile }
+
+val hasReleaseSigning = releaseStoreFile != null &&
+    !releaseStorePassword.isNullOrEmpty() &&
+    !releaseKeyAlias.isNullOrEmpty() &&
+    !releaseKeyPassword.isNullOrEmpty()
 
 android {
     namespace = "com.orbiteq.app"
@@ -19,10 +58,29 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
