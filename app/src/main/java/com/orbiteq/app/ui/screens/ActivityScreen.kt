@@ -1238,13 +1238,6 @@ private fun AutoEqImportDialog(
                 when (selectedTab) {
                     AutoEqImportTab.CATALOG -> {
                         val clearSearchCd = stringResource(R.string.autoeq_catalog_clear_search_cd)
-                        Text(
-                            text = stringResource(R.string.autoeq_catalog_hint),
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = colors.textSecondary,
-                            ),
-                        )
-
                         OutlinedTextField(
                             value = searchQuery,
                             onValueChange = { if (it.length <= 60) searchQuery = it },
@@ -1296,71 +1289,81 @@ private fun AutoEqImportDialog(
                             ),
                         )
 
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState())
-                                .selectableGroup(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            categoryFilters.forEach { (category, label) ->
-                                val selected = category == selectedCategory
-                                val chipTag = "catalog_cat_${category?.name?.lowercase(Locale.ROOT) ?: "all"}"
-                                Box(
-                                    modifier = Modifier
-                                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                                        .testTag(chipTag)
-                                        .selectable(
-                                            selected = selected,
-                                            role = Role.RadioButton,
-                                            onClick = { selectedCategoryName = category?.name },
-                                        ),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(999.dp))
-                                            .background(if (selected) colors.primaryAccent else colors.surface)
-                                            .border(
-                                                width = 1.dp,
-                                                color = if (selected) colors.borderActive else colors.borderHairline,
-                                                shape = RoundedCornerShape(999.dp),
-                                            )
-                                            .padding(horizontal = 12.dp, vertical = 7.dp),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Text(
-                                            text = label,
-                                            style = SpaceMonoTabularStyle.copy(
-                                                fontSize = 10.5.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (selected) colors.onPrimaryAccent else colors.textSecondary,
-                                            ),
-                                            maxLines = 1,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        Text(
-                            text = stringResource(R.string.autoeq_catalog_count_fmt, filteredCatalogEntries.size),
-                            style = SpaceMonoTabularStyle.copy(
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = colors.textMuted,
-                            ),
-                            maxLines = 1,
-                        )
-
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 120.dp, max = 210.dp)
+                                .weight(1f, fill = false)
+                                .heightIn(max = 280.dp)
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            Text(
+                                text = stringResource(R.string.autoeq_catalog_hint),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = colors.textSecondary,
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .selectableGroup(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                categoryFilters.forEach { (category, label) ->
+                                    val selected = category == selectedCategory
+                                    val chipTag = "catalog_cat_${category?.name?.lowercase(Locale.ROOT) ?: "all"}"
+                                    Box(
+                                        modifier = Modifier
+                                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                                            .testTag(chipTag)
+                                            .selectable(
+                                                selected = selected,
+                                                role = Role.RadioButton,
+                                                onClick = { selectedCategoryName = category?.name },
+                                            ),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(999.dp))
+                                                .background(if (selected) colors.primaryAccent else colors.surface)
+                                                .border(
+                                                    width = 1.dp,
+                                                    color = if (selected) colors.borderActive else colors.borderHairline,
+                                                    shape = RoundedCornerShape(999.dp),
+                                                )
+                                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Text(
+                                                text = label,
+                                                style = SpaceMonoTabularStyle.copy(
+                                                    fontSize = 10.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (selected) colors.onPrimaryAccent else colors.textSecondary,
+                                                ),
+                                                maxLines = 1,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text(
+                                text = stringResource(R.string.autoeq_catalog_count_fmt, filteredCatalogEntries.size),
+                                style = SpaceMonoTabularStyle.copy(
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = colors.textMuted,
+                                ),
+                                maxLines = 1,
+                            )
+
                             if (filteredCatalogEntries.isEmpty()) {
                                 Text(
                                     text = stringResource(R.string.autoeq_catalog_empty),
@@ -1376,6 +1379,7 @@ private fun AutoEqImportDialog(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .heightIn(min = 52.dp)
+                                            .testTag("catalog_entry_${entry.catalogId}")
                                             .clip(RoundedCornerShape(12.dp))
                                             .background(colors.surface)
                                             .border(1.dp, colors.borderHairline, RoundedCornerShape(12.dp))

@@ -622,6 +622,7 @@ private fun MbcPunchCard(
             options = options,
             selectedOption = mbcMode,
             onSelect = onMbcModeChange,
+            optionTestTag = { mode -> "mbc_mode_${mode.name.lowercase(Locale.ROOT)}" },
         )
     }
 }
@@ -765,6 +766,9 @@ private fun ToneAndComfortCard(
             )
             Text(
                 text = tiltReadoutText,
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .padding(horizontal = 6.dp),
                 style = SpaceMonoTabularStyle.copy(
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.Bold,

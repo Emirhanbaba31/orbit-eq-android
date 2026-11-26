@@ -52,6 +52,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.MeasurePolicy
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -73,6 +75,7 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.log2
+import kotlin.math.roundToInt
 
 private const val PLOT_MIN_DB = -15f
 private const val PLOT_MAX_DB = 15f
@@ -84,10 +87,10 @@ private val LOG_SPAN_20_TO_20K = log2(20000f / 20f)
 internal val ISO_31_LOG_FRACTIONS: FloatArray = FloatArray(EQ_31_BAND_COUNT) { i ->
     (log2(PleasureProfiles.ISO_31_FREQUENCIES_HZ[i] / 20f) / LOG_SPAN_20_TO_20K).coerceIn(0f, 1f)
 }
-private val ISO_10_IN_31_INDICES = intArrayOf(2, 5, 8, 11, 14, 17, 20, 23, 26, 29)
+internal val ISO_10_IN_31_INDICES = intArrayOf(2, 5, 8, 11, 14, 17, 20, 23, 26, 29)
 private val GRID_DB_LEVELS = floatArrayOf(-12f, -6f, 6f, 12f)
 
-private class SpectrumAnimBuffer {
+internal class SpectrumAnimBuffer {
     val displayBins = FloatArray(SPECTRUM_BIN_COUNT)
     val displayLive = FloatArray(EQ_BAND_COUNT)
     val displayLive31 = FloatArray(EQ_31_BAND_COUNT)
@@ -122,6 +125,9 @@ private class SpectrumAnimBuffer {
         if (hasLive31Curve != use31) {
             hasLive31Curve = use31
             changed = true
+        }
+        if (!use31) {
+            displayLive31.fill(0f)
         }
         for (i in 0 until SPECTRUM_BIN_COUNT) {
             val next = if (activeSignal) sanitizeFinite(bins.getOrElse(i) { 0f }).coerceIn(0f, 1f) else 0f
@@ -343,6 +349,8 @@ fun HeroSpectrumCanvas(
     val targetCurveState = rememberUpdatedState(targetCurveDb)
     val liveCurveState = rememberUpdatedState(liveCurveDb)
     val liveCurve31State = rememberUpdatedState(liveEqCurve31Db)
+    val use31BandCurve = liveEqCurve31Db.size == EQ_31_BAND_COUNT
+    val use31BandState = rememberUpdatedState(use31BandCurve)
     val trimsState = rememberUpdatedState(manualTrimsDb)
 
     Surface(
@@ -445,19 +453,27 @@ fun HeroSpectrumCanvas(
                                 val plotW = (plotRight - plotLeft).coerceAtLeast(1f)
                                 val plotH = (plotBottom - plotTop).coerceAtLeast(1f)
 
-                                for (b in 0 until EQ_BAND_COUNT) {
-                                    animBuffer.bandXs[b] = plotLeft + (b / (EQ_BAND_COUNT - 1).toFloat()) * plotW
-                                }
-                                for (b in 0 until EQ_31_BAND_COUNT) {
-                                    animBuffer.band31Xs[b] = plotLeft + ISO_31_LOG_FRACTIONS[b] * plotW
-                                }
+                                val use31Cache = use31BandState.value
+                                populatePlotXCoordinates(
+                                    plotLeft = plotLeft,
+                                    plotW = plotW,
+                                    use31BandCurve = use31Cache,
+                                    outBandXs = animBuffer.bandXs,
+                                    outBand31Xs = animBuffer.band31Xs,
+                                )
 
                                 val minorStroke = 0.75.dp.toPx()
                                 val majorStroke = 1.dp.toPx()
                                 val tickLen = 7.dp.toPx()
                                 val tickColor = c.textMuted.copy(alpha = 0.45f)
 
-                                val slotW = plotW / SPECTRUM_BIN_COUNT.toFloat()
+                                val fftLeft = if (use31Cache) animBuffer.band31Xs[2] else plotLeft
+                                val fftSpan = if (use31Cache) {
+                                    (animBuffer.band31Xs[29] - animBuffer.band31Xs[2]).coerceAtLeast(1f)
+                                } else {
+                                    plotW
+                                }
+                                val slotW = fftSpan / SPECTRUM_BIN_COUNT.toFloat()
                                 val barW = (slotW * 0.62f).coerceAtLeast(1.5.dp.toPx())
                                 val barCorner = CornerRadius(barW * 0.4f, barW * 0.4f)
                                 val minBarH = 2.dp.toPx()
@@ -601,7 +617,7 @@ fun HeroSpectrumCanvas(
                                         val binVal = rawBin.coerceIn(0f, 1f)
                                         if (binVal <= 0.01f) continue
                                         val barH = (binVal * plotH * 0.88f).coerceAtLeast(minBarH)
-                                        val barX = plotLeft + i * slotW + (slotW - barW) * 0.5f
+                                        val barX = fftLeft + i * slotW + (slotW - barW) * 0.5f
                                         val barTop = plotBottom - barH
                                         drawRoundRect(
                                             brush = barBrush,
@@ -744,23 +760,14 @@ fun HeroSpectrumCanvas(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     // ISO Frequency Axis Labels
-                    Row(
+                    FrequencyAxisLabels(
+                        labels = PleasureProfiles.ISO_LABELS,
+                        useLog31Positions = use31BandCurve,
+                        textColor = colors.textMuted,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 2.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        PleasureProfiles.ISO_LABELS.forEach { label ->
-                            Text(
-                                text = label,
-                                style = SpaceMonoTabularStyle.copy(
-                                    fontSize = 9.sp,
-                                    color = colors.textMuted,
-                                ),
-                                maxLines = 1,
-                            )
-                        }
-                    }
+                            .padding(horizontal = 4.dp),
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -1049,6 +1056,123 @@ private fun localizedModeName(mode: PleasureMode): String = when (mode) {
     PleasureMode.HORIZON -> stringResource(R.string.mode_horizon_name)
     PleasureMode.ECLIPSE -> stringResource(R.string.mode_eclipse_name)
     PleasureMode.COMMS -> stringResource(R.string.mode_comms_name)
+}
+
+@Composable
+private fun FrequencyAxisLabels(
+    labels: List<String>,
+    useLog31Positions: Boolean,
+    textColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val labelStyle = SpaceMonoTabularStyle.copy(
+        fontSize = 9.sp,
+        color = textColor,
+    )
+    val measurePolicy = remember(useLog31Positions) {
+        MeasurePolicy { measurables, constraints ->
+            val childConstraints = constraints.copy(minWidth = 0, minHeight = 0)
+            val placeables = measurables.map { it.measure(childConstraints) }
+            val count = placeables.size
+            val minGapPx = 2.dp.roundToPx()
+            val labelWidths = IntArray(count) { i -> placeables[i].width }
+            val totalWidth = labelWidths.sum() + (count - 1).coerceAtLeast(0) * minGapPx
+            val width = if (constraints.hasBoundedWidth) constraints.maxWidth else totalWidth
+            val height = placeables.maxOfOrNull { it.height } ?: 0
+            if (count == 0 || width <= 0) {
+                return@MeasurePolicy layout(width.coerceAtLeast(0), height) {}
+            }
+            val xs = computeFrequencyLabelXs(
+                width = width,
+                labelWidths = labelWidths,
+                useLog31Positions = useLog31Positions,
+                minGapPx = minGapPx,
+            )
+            layout(width, height) {
+                for (i in 0 until count) {
+                    val y = ((height - placeables[i].height) / 2f).roundToInt()
+                    placeables[i].place(x = xs[i], y = y)
+                }
+            }
+        }
+    }
+    Layout(
+        modifier = modifier,
+        content = {
+            labels.forEach { label ->
+                Text(
+                    text = label,
+                    style = labelStyle,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+        },
+        measurePolicy = measurePolicy,
+    )
+}
+
+internal fun populatePlotXCoordinates(
+    plotLeft: Float,
+    plotW: Float,
+    use31BandCurve: Boolean,
+    outBandXs: FloatArray,
+    outBand31Xs: FloatArray,
+) {
+    for (b in 0 until EQ_31_BAND_COUNT) {
+        outBand31Xs[b] = plotLeft + ISO_31_LOG_FRACTIONS[b] * plotW
+    }
+    for (b in 0 until EQ_BAND_COUNT) {
+        outBandXs[b] = if (use31BandCurve) {
+            outBand31Xs[ISO_10_IN_31_INDICES[b]]
+        } else {
+            plotLeft + (b / (EQ_BAND_COUNT - 1).toFloat()) * plotW
+        }
+    }
+}
+
+internal fun computeFrequencyLabelXs(
+    width: Int,
+    labelWidths: IntArray,
+    useLog31Positions: Boolean,
+    minGapPx: Int,
+): IntArray {
+    val count = labelWidths.size
+    val xs = IntArray(count)
+    if (count == 0 || width <= 0) return xs
+
+    for (i in 0 until count) {
+        val labelWidth = labelWidths[i]
+        val fraction = if (useLog31Positions && i < ISO_10_IN_31_INDICES.size) {
+            ISO_31_LOG_FRACTIONS[ISO_10_IN_31_INDICES[i]]
+        } else if (count > 1) {
+            i / (count - 1).toFloat()
+        } else {
+            0.5f
+        }
+        val maxX = (width - labelWidth).coerceAtLeast(0)
+        val centeredX = (fraction * width - labelWidth * 0.5f).roundToInt()
+        xs[i] = centeredX.coerceIn(0, maxX)
+    }
+
+    // Guarantee zero label overlaps on compact 360dp displays and larger font scales
+    for (i in 1 until count) {
+        val minAllowed = xs[i - 1] + labelWidths[i - 1] + minGapPx
+        if (xs[i] < minAllowed) {
+            xs[i] = minAllowed
+        }
+    }
+    val lastMaxX = (width - labelWidths[count - 1]).coerceAtLeast(0)
+    if (xs[count - 1] > lastMaxX) {
+        xs[count - 1] = lastMaxX
+        for (i in count - 2 downTo 0) {
+            val maxAllowed = xs[i + 1] - labelWidths[i] - minGapPx
+            if (xs[i] > maxAllowed) {
+                xs[i] = maxAllowed.coerceAtLeast(0)
+            }
+        }
+    }
+    return xs
 }
 
 private fun sanitizeFinite(value: Float, default: Float = 0f): Float =

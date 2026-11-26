@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.dp
@@ -96,14 +97,11 @@ class OrbitUiSmokeTest {
         composeRule.onNodeWithText(subsonicTitle).assertIsDisplayed().performClick()
         assertEquals(false, latestSubsonic)
 
-        val mbcOff = str(R.string.mbc_mode_off)
-        val mbcSubtle = str(R.string.mbc_mode_subtle)
-        val mbcPunchy = str(R.string.mbc_mode_punchy)
         composeRule.onNodeWithTag("mixer_list")
-            .performScrollToNode(hasText(mbcPunchy))
-        composeRule.onNodeWithText(mbcOff).assertIsDisplayed()
-        composeRule.onNodeWithText(mbcSubtle).assertIsDisplayed()
-        composeRule.onNodeWithText(mbcPunchy).assertIsDisplayed().performClick()
+            .performScrollToNode(hasTestTag("mbc_mode_punchy"))
+        composeRule.onNodeWithTag("mbc_mode_off").assertIsDisplayed()
+        composeRule.onNodeWithTag("mbc_mode_subtle").assertIsDisplayed()
+        composeRule.onNodeWithTag("mbc_mode_punchy").assertIsDisplayed().performClick()
         assertEquals(MbcMode.PUNCHY, latestMbcMode)
 
         val balanceTitle = str(R.string.dsp_balance_title)
@@ -170,7 +168,10 @@ class OrbitUiSmokeTest {
 
         composeRule.onNodeWithText(str(R.string.autoeq_dialog_title)).assertIsDisplayed()
         val firstCatalog = AutoEqCatalog.entries.first()
-        composeRule.onNodeWithText(firstCatalog.name).assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("catalog_entry_${firstCatalog.catalogId}")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .performClick()
         assertEquals(firstCatalog, selectedCatalogEntry)
 
         composeRule.onNodeWithText(importAutoEqBtn).performClick()
@@ -362,17 +363,20 @@ class OrbitUiSmokeTest {
         composeRule.onNodeWithText(importAutoEqBtn).performClick()
 
         composeRule.onNodeWithTag("catalog_search_input").performTextInput("Moondrop")
-        composeRule.onNodeWithText("Moondrop Chu II (Harman)").assertIsDisplayed()
+        composeRule.onNodeWithText("Moondrop Chu II (Harman)").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("Sony WH-1000XM5 (Harman)").assertDoesNotExist()
 
         composeRule.onNodeWithContentDescription(str(R.string.autoeq_catalog_clear_search_cd)).performClick()
-        composeRule.onNodeWithTag("catalog_cat_q30").performClick()
-        composeRule.onNodeWithText("Soundcore Life Q30 (ANC On · Oratory1990)").assertIsDisplayed()
+        composeRule.onNodeWithTag("catalog_cat_q30").performScrollTo().performClick()
+        composeRule.onNodeWithTag("catalog_entry_catalog_soundcore_q30").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("Moondrop Chu II (Harman)").assertDoesNotExist()
 
-        composeRule.onNodeWithTag("catalog_cat_all").performClick()
+        composeRule.onNodeWithTag("catalog_cat_all").performScrollTo().performClick()
         composeRule.onNodeWithTag("catalog_search_input").performTextInput("Q30")
-        composeRule.onNodeWithText("Soundcore Life Q30 (ANC Off · Harman)").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("catalog_entry_catalog_soundcore_q30_anc_off")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .performClick()
         assertEquals("catalog_soundcore_q30_anc_off", selectedCatalogEntry?.catalogId)
 
         composeRule.onNodeWithText(importAutoEqBtn).performClick()
