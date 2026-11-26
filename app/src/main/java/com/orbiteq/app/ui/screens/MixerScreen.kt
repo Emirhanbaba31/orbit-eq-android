@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -48,6 +49,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -74,6 +76,7 @@ import androidx.compose.ui.unit.sp
 import com.orbiteq.app.R
 import com.orbiteq.app.dsp.PleasureProfiles
 import com.orbiteq.app.model.CustomPreset
+import com.orbiteq.app.model.DeEsserMode
 import com.orbiteq.app.model.EngineStatus
 import com.orbiteq.app.model.MbcMode
 import com.orbiteq.app.model.OrbitUiState
@@ -87,12 +90,17 @@ import com.orbiteq.app.ui.icons.OrbitIcons
 import com.orbiteq.app.ui.modeDisplayName
 import com.orbiteq.app.ui.theme.LocalOrbitColors
 import com.orbiteq.app.ui.theme.SpaceMonoTabularStyle
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private const val MAX_PREAMP_BAR_CUT_DB = 12f
 private const val BALANCE_CENTER_SNAP_EPSILON = 0.04f
 private const val BALANCE_STEP_DIVISOR = 50f
+private const val TONE_TILT_MIN = -1.5f
+private const val TONE_TILT_MAX = 1.5f
+private const val TONE_TILT_CENTER_SNAP_EPSILON = 0.08f
+private const val TONE_TILT_STEP_DIVISOR = 10f
 
 internal fun normalizeDisplayedChannelBalance(balance: Float): Float {
     if (!balance.isFinite()) return 0f
@@ -109,6 +117,21 @@ internal fun snapAndQuantizeChannelBalance(raw: Float): Float {
     return if (abs(quantized) <= BALANCE_CENTER_SNAP_EPSILON) 0f else quantized
 }
 
+internal fun normalizeDisplayedToneTilt(raw: Float): Float {
+    if (!raw.isFinite()) return 0f
+    val clamped = raw.coerceIn(TONE_TILT_MIN, TONE_TILT_MAX)
+    return if (abs(clamped) <= TONE_TILT_CENTER_SNAP_EPSILON) 0f else clamped
+}
+
+internal fun snapAndQuantizeToneTilt(raw: Float): Float {
+    if (!raw.isFinite()) return 0f
+    val clamped = raw.coerceIn(TONE_TILT_MIN, TONE_TILT_MAX)
+    if (abs(clamped) <= TONE_TILT_CENTER_SNAP_EPSILON) return 0f
+    val quantized = ((clamped * TONE_TILT_STEP_DIVISOR).roundToInt() / TONE_TILT_STEP_DIVISOR)
+        .coerceIn(TONE_TILT_MIN, TONE_TILT_MAX)
+    return if (abs(quantized) <= TONE_TILT_CENTER_SNAP_EPSILON) 0f else quantized
+}
+
 @Composable
 fun MixerScreen(
     uiState: OrbitUiState,
@@ -118,6 +141,9 @@ fun MixerScreen(
     onMbcModeChange: (MbcMode) -> Unit,
     onSubsonicFilterChange: (Boolean) -> Unit,
     onTrueHeadroomChange: (Boolean) -> Unit,
+    onToneTiltChange: (Float) -> Unit = {},
+    onDeEsserModeChange: (DeEsserMode) -> Unit = {},
+    onLoudnessMatchedBypassChange: (Boolean) -> Unit = {},
     onChannelBalanceChange: (Float) -> Unit,
     onResponseSpeedChange: (ResponseSpeed) -> Unit,
     onSavePreset: (String) -> Unit,
@@ -260,6 +286,20 @@ fun MixerScreen(
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     onMbcModeChange(next)
                 },
+            )
+        }
+
+        item(key = "tone_and_comfort_card") {
+            ToneAndComfortCard(
+                toneTiltDbPerOct = uiState.settings.toneTiltDbPerOct,
+                deEsserMode = uiState.settings.deEsserMode,
+                loudnessMatchedBypass = uiState.settings.loudnessMatchedBypass,
+                onToneTiltChange = onToneTiltChange,
+                onDeEsserModeChange = { next ->
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onDeEsserModeChange(next)
+                },
+                onLoudnessMatchedBypassChange = onLoudnessMatchedBypassChange,
             )
         }
 
@@ -430,7 +470,7 @@ private fun LimiterPreampCard(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        LimiterToggleRow(
+        DspToggleRow(
             title = stringResource(R.string.dsp_true_headroom_title),
             description = stringResource(R.string.dsp_true_headroom_desc),
             checked = trueHeadroomMode,
@@ -439,7 +479,7 @@ private fun LimiterPreampCard(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        LimiterToggleRow(
+        DspToggleRow(
             title = stringResource(R.string.dsp_subsonic_title),
             description = stringResource(R.string.dsp_subsonic_desc),
             checked = subsonicFilterEnabled,
@@ -449,16 +489,17 @@ private fun LimiterPreampCard(
 }
 
 @Composable
-private fun LimiterToggleRow(
+private fun DspToggleRow(
     title: String,
     description: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val colors = LocalOrbitColors.current
     val haptic = LocalHapticFeedback.current
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(12.dp))
@@ -577,46 +618,247 @@ private fun MbcPunchCard(
 
         Spacer(modifier = Modifier.height(10.dp))
 
+        SegmentedOptionRow(
+            options = options,
+            selectedOption = mbcMode,
+            onSelect = onMbcModeChange,
+        )
+    }
+}
+
+@Composable
+private fun ToneAndComfortCard(
+    toneTiltDbPerOct: Float,
+    deEsserMode: DeEsserMode,
+    loudnessMatchedBypass: Boolean,
+    onToneTiltChange: (Float) -> Unit,
+    onDeEsserModeChange: (DeEsserMode) -> Unit,
+    onLoudnessMatchedBypassChange: (Boolean) -> Unit,
+) {
+    val colors = LocalOrbitColors.current
+    val haptic = LocalHapticFeedback.current
+    val canonicalTilt = normalizeDisplayedToneTilt(toneTiltDbPerOct)
+    var dragTilt by remember { mutableStateOf<Float?>(null) }
+    var lastEmittedTilt by remember { mutableFloatStateOf(canonicalTilt) }
+    SideEffect {
+        if (dragTilt == null) {
+            lastEmittedTilt = canonicalTilt
+        }
+    }
+    val displayTilt = dragTilt ?: canonicalTilt
+    val isFlat = abs(displayTilt) <= TONE_TILT_CENTER_SNAP_EPSILON
+
+    val tiltTitle = stringResource(R.string.dsp_tone_tilt_title)
+    val warmLabel = stringResource(R.string.dsp_tone_tilt_warm)
+    val flatLabel = stringResource(R.string.dsp_tone_tilt_flat)
+    val brightLabel = stringResource(R.string.dsp_tone_tilt_bright)
+    val unitLabel = stringResource(R.string.dsp_tone_tilt_unit)
+    val resetCd = stringResource(R.string.dsp_tone_tilt_reset_cd)
+    val tiltReadoutText = when {
+        isFlat -> "$flatLabel 0.0 $unitLabel"
+        displayTilt < 0f -> "$warmLabel ${String.format(Locale.US, "%+.1f", displayTilt)} $unitLabel"
+        else -> "$brightLabel ${String.format(Locale.US, "%+.1f", displayTilt)} $unitLabel"
+    }
+
+    val deEsserOptions = listOf(
+        DeEsserMode.OFF to stringResource(R.string.deesser_mode_off),
+        DeEsserMode.GENTLE to stringResource(R.string.deesser_mode_gentle),
+        DeEsserMode.STRONG to stringResource(R.string.deesser_mode_strong),
+    )
+
+    val cardHighlighted = !isFlat || deEsserMode != DeEsserMode.OFF || loudnessMatchedBypass
+
+    OrbitGlassCard(highlighted = cardHighlighted) {
+        Text(
+            text = stringResource(R.string.dsp_tone_comfort_title),
+            style = MaterialTheme.typography.titleMedium.copy(
+                color = colors.textPrimary,
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .selectableGroup(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            options.forEach { (mode, label) ->
-                val selected = mode == mbcMode
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (selected) colors.primaryAccent else colors.surface)
-                        .border(
-                            width = 1.dp,
-                            color = if (selected) colors.borderActive else colors.borderHairline,
-                            shape = RoundedCornerShape(12.dp),
-                        )
-                        .selectable(
-                            selected = selected,
-                            role = Role.RadioButton,
-                            onClick = { onMbcModeChange(mode) },
-                        )
-                        .padding(horizontal = 6.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = label,
-                        style = SpaceMonoTabularStyle.copy(
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (selected) colors.onPrimaryAccent else colors.textSecondary,
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = tiltTitle,
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.textPrimary,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = stringResource(R.string.dsp_tone_tilt_desc),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = colors.textSecondary,
+                    ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            OutlinedButton(
+                onClick = {
+                    dragTilt = null
+                    lastEmittedTilt = 0f
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onToneTiltChange(0f)
+                },
+                enabled = !isFlat,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("tone_tilt_reset_btn")
+                    .semantics {
+                        contentDescription = resetCd
+                    },
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (!isFlat) colors.borderActive else colors.borderHairline,
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Icon(
+                    imageVector = OrbitIcons.Reset,
+                    contentDescription = null,
+                    tint = if (!isFlat) colors.ionAccent else colors.textMuted,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = stringResource(R.string.dsp_tone_tilt_reset),
+                    style = MaterialTheme.typography.labelLarge.copy(
+                        fontSize = 12.sp,
+                        color = if (!isFlat) colors.textPrimary else colors.textMuted,
+                    ),
+                    maxLines = 1,
+                )
             }
         }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = warmLabel,
+                style = SpaceMonoTabularStyle.copy(
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (displayTilt < -TONE_TILT_CENTER_SNAP_EPSILON) colors.ionAccent else colors.textMuted,
+                ),
+                maxLines = 1,
+            )
+            Text(
+                text = tiltReadoutText,
+                style = SpaceMonoTabularStyle.copy(
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (!isFlat) colors.ionAccent else colors.textSecondary,
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = brightLabel,
+                style = SpaceMonoTabularStyle.copy(
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (displayTilt > TONE_TILT_CENTER_SNAP_EPSILON) colors.ionAccent else colors.textMuted,
+                ),
+                maxLines = 1,
+            )
+        }
+
+        Slider(
+            value = displayTilt,
+            onValueChange = { raw ->
+                val snapped = snapAndQuantizeToneTilt(raw)
+                if (snapped == 0f && displayTilt != 0f) {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                }
+                dragTilt = snapped
+                if (abs(snapped - lastEmittedTilt) >= 0.05f) {
+                    lastEmittedTilt = snapped
+                    onToneTiltChange(snapped)
+                }
+            },
+            onValueChangeFinished = {
+                dragTilt = null
+            },
+            valueRange = TONE_TILT_MIN..TONE_TILT_MAX,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .testTag("tone_tilt_slider")
+                .semantics {
+                    contentDescription = "$tiltTitle $tiltReadoutText"
+                },
+            colors = SliderDefaults.colors(
+                thumbColor = colors.textPrimary,
+                activeTrackColor = colors.primaryAccent,
+                inactiveTrackColor = colors.gridMajor,
+                activeTickColor = Color.Transparent,
+                inactiveTickColor = Color.Transparent,
+            ),
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
+        HorizontalDivider(thickness = 1.dp, color = colors.borderHairline)
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = stringResource(R.string.dsp_deesser_title),
+                style = MaterialTheme.typography.titleSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.textPrimary,
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = stringResource(R.string.dsp_deesser_desc),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = colors.textSecondary,
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        SegmentedOptionRow(
+            options = deEsserOptions,
+            selectedOption = deEsserMode,
+            onSelect = onDeEsserModeChange,
+            optionTestTag = { mode -> "deesser_mode_${mode.name.lowercase(Locale.ROOT)}" },
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        DspToggleRow(
+            title = stringResource(R.string.dsp_loudness_ab_title),
+            description = stringResource(R.string.dsp_loudness_ab_desc),
+            checked = loudnessMatchedBypass,
+            onCheckedChange = onLoudnessMatchedBypassChange,
+            modifier = Modifier.testTag("loudness_matched_ab_toggle"),
+        )
     }
 }
 
@@ -630,8 +872,10 @@ private fun ChannelBalanceCard(
     val canonicalBalance = normalizeDisplayedChannelBalance(channelBalance)
     var dragBalance by remember { mutableStateOf<Float?>(null) }
     var lastEmittedBalance by remember { mutableFloatStateOf(canonicalBalance) }
-    if (dragBalance == null) {
-        lastEmittedBalance = canonicalBalance
+    SideEffect {
+        if (dragBalance == null) {
+            lastEmittedBalance = canonicalBalance
+        }
     }
     val displayBalance = dragBalance ?: canonicalBalance
     val isCentered = abs(displayBalance) <= BALANCE_CENTER_SNAP_EPSILON
@@ -797,44 +1041,61 @@ private fun ResponseSpeedCard(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .selectableGroup(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            options.forEach { (speed, label) ->
-                val selected = speed == selectedSpeed
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (selected) colors.primaryAccent else colors.surface)
-                        .border(
-                            width = 1.dp,
-                            color = if (selected) colors.borderActive else colors.borderHairline,
-                            shape = RoundedCornerShape(12.dp),
-                        )
-                        .selectable(
-                            selected = selected,
-                            role = Role.RadioButton,
-                            onClick = { onSelectSpeed(speed) },
-                        )
-                        .padding(horizontal = 6.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = label,
-                        style = SpaceMonoTabularStyle.copy(
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (selected) colors.onPrimaryAccent else colors.textSecondary,
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+        SegmentedOptionRow(
+            options = options,
+            selectedOption = selectedSpeed,
+            onSelect = onSelectSpeed,
+        )
+    }
+}
+
+@Composable
+private fun <T> SegmentedOptionRow(
+    options: List<Pair<T, String>>,
+    selectedOption: T,
+    onSelect: (T) -> Unit,
+    optionTestTag: ((T) -> String)? = null,
+) {
+    val colors = LocalOrbitColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectableGroup(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        options.forEach { (option, label) ->
+            val selected = option == selectedOption
+            val tagModifier = optionTestTag?.let { Modifier.testTag(it(option)) } ?: Modifier
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp)
+                    .then(tagModifier)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (selected) colors.primaryAccent else colors.surface)
+                    .border(
+                        width = 1.dp,
+                        color = if (selected) colors.borderActive else colors.borderHairline,
+                        shape = RoundedCornerShape(12.dp),
                     )
-                }
+                    .selectable(
+                        selected = selected,
+                        role = Role.RadioButton,
+                        onClick = { onSelect(option) },
+                    )
+                    .padding(horizontal = 6.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = label,
+                    style = SpaceMonoTabularStyle.copy(
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (selected) colors.onPrimaryAccent else colors.textSecondary,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }

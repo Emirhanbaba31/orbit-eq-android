@@ -2,6 +2,7 @@ package com.orbiteq.app
 
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -16,12 +17,19 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.orbiteq.app.dsp.AutoEqCatalog
 import com.orbiteq.app.dsp.AutoEqParser
 import com.orbiteq.app.dsp.CatalogHeadphoneEntry
+import com.orbiteq.app.model.CustomHeadphoneProfile
+import com.orbiteq.app.model.DeEsserMode
+import com.orbiteq.app.model.DspBackend
+import com.orbiteq.app.model.EngineStatus
+import com.orbiteq.app.model.LiveAudioTelemetry
 import com.orbiteq.app.model.MbcMode
 import com.orbiteq.app.model.OrbitSettings
 import com.orbiteq.app.model.OrbitUiState
+import com.orbiteq.app.model.PleasureMode
 import com.orbiteq.app.ui.OrbitPermissionState
 import com.orbiteq.app.ui.screens.ActivityScreen
 import com.orbiteq.app.ui.screens.MixerScreen
+import com.orbiteq.app.ui.screens.StudioScreen
 import com.orbiteq.app.ui.theme.OrbitTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -190,5 +198,186 @@ class OrbitUiSmokeTest {
         assertTrue(importClicked)
         assertTrue(copyClicked)
         assertTrue(shareClicked)
+    }
+
+    @Test
+    fun studioScreen_renders31BandTelemetryAndMatchedBypassChip() {
+        var bypassClicked = false
+        var selectedMode: PleasureMode? = null
+        val uiState = OrbitUiState(
+            settings = OrbitSettings(
+                powerEnabled = true,
+                bypassed = true,
+                loudnessMatchedBypass = true,
+            ),
+            autoBypassedByRule = false,
+            telemetry = LiveAudioTelemetry(
+                engineStatus = EngineStatus.BYPASSED,
+                dspBackend = DspBackend.DYNAMICS_PROCESSING,
+                preEqBandCount = 31,
+                mbcBandCount = 5,
+                bypassMatchGainDb = -3.1f,
+                liveEqCurve31Db = List(31) { idx -> if (idx < 10) -2.0f else 1.5f },
+            ),
+        )
+
+        composeRule.setContent {
+            OrbitTheme {
+                StudioScreen(
+                    uiState = uiState,
+                    contentPadding = PaddingValues(16.dp),
+                    onTogglePower = {},
+                    onToggleBypass = { bypassClicked = true },
+                    onSelectMode = { selectedMode = it },
+                    onSaveForActiveApp = {},
+                    onIntensityChange = {},
+                    onBassMacroChange = {},
+                    onAirMacroChange = {},
+                    onDynamicLoudnessChange = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithText(str(R.string.hud_status_bypassed)).assertIsDisplayed()
+        composeRule.onNodeWithText(str(R.string.ab_matched_chip_fmt, -3.1f)).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription(str(R.string.ab_bypass_cd)).performClick()
+        assertTrue(bypassClicked)
+
+        composeRule.onNodeWithText(str(R.string.mode_gravity_name)).performClick()
+        assertEquals(PleasureMode.GRAVITY, selectedMode)
+    }
+
+    @Test
+    fun mixerScreen_toneAndComfortControlsInvokeCallbacks() {
+        var latestToneTilt: Float? = null
+        var latestDeEsser: DeEsserMode? = null
+        var latestLoudnessMatched: Boolean? = null
+
+        val uiState = OrbitUiState(
+            settings = OrbitSettings(
+                powerEnabled = true,
+                toneTiltDbPerOct = 0.8f,
+                deEsserMode = DeEsserMode.GENTLE,
+                loudnessMatchedBypass = true,
+            ),
+        )
+
+        composeRule.setContent {
+            OrbitTheme {
+                MixerScreen(
+                    uiState = uiState,
+                    contentPadding = PaddingValues(16.dp),
+                    onBandTrimChange = { _, _ -> },
+                    onResetTrims = {},
+                    onMbcModeChange = {},
+                    onSubsonicFilterChange = {},
+                    onTrueHeadroomChange = {},
+                    onToneTiltChange = { latestToneTilt = it },
+                    onDeEsserModeChange = { latestDeEsser = it },
+                    onLoudnessMatchedBypassChange = { latestLoudnessMatched = it },
+                    onChannelBalanceChange = {},
+                    onResponseSpeedChange = {},
+                    onSavePreset = {},
+                    onApplyPreset = {},
+                    onDeletePreset = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("mixer_list")
+            .performScrollToNode(hasText(str(R.string.dsp_tone_comfort_title)))
+        composeRule.onNodeWithText(str(R.string.dsp_tone_comfort_title)).assertIsDisplayed()
+        composeRule.onNodeWithText(str(R.string.dsp_tone_tilt_title)).assertIsDisplayed()
+
+        composeRule.onNodeWithTag("tone_tilt_reset_btn").assertIsDisplayed().performClick()
+        assertEquals(0f, latestToneTilt ?: -1f, 0.0001f)
+
+        composeRule.onNodeWithTag("mixer_list")
+            .performScrollToNode(hasText(str(R.string.dsp_loudness_ab_title)))
+        composeRule.onNodeWithTag("deesser_mode_off").assertIsDisplayed()
+        composeRule.onNodeWithTag("deesser_mode_gentle").assertIsDisplayed()
+        composeRule.onNodeWithTag("deesser_mode_strong").assertIsDisplayed().performClick()
+        assertEquals(DeEsserMode.STRONG, latestDeEsser)
+
+        composeRule.onNodeWithTag("loudness_matched_ab_toggle").assertIsDisplayed().performClick()
+        assertEquals(false, latestLoudnessMatched)
+    }
+
+    @Test
+    fun activityScreen_catalogSearchCategoryFiltersAndSparklineWork() {
+        var selectedCatalogEntry: CatalogHeadphoneEntry? = null
+        val firstQ30 = AutoEqCatalog.entries.first()
+        val activeProfile = CustomHeadphoneProfile(
+            id = firstQ30.catalogId,
+            name = firstQ30.name,
+            gains31Db = firstQ30.gains31Db,
+            sourceLabel = "AutoEQ Catalog",
+        )
+        val uiState = OrbitUiState(
+            settings = OrbitSettings(
+                powerEnabled = true,
+                customHeadphoneProfiles = listOf(activeProfile),
+                deviceCustomProfileIds = mapOf("speaker" to activeProfile.id),
+            ),
+            activeCustomHeadphoneProfile = activeProfile,
+            telemetry = LiveAudioTelemetry(
+                engineStatus = EngineStatus.AUTO_FFT_LOCKED,
+                dspBackend = DspBackend.DYNAMICS_PROCESSING,
+                preEqBandCount = 31,
+                mbcBandCount = 5,
+            ),
+        )
+
+        composeRule.setContent {
+            OrbitTheme {
+                ActivityScreen(
+                    uiState = uiState,
+                    permissionState = OrbitPermissionState(),
+                    contentPadding = PaddingValues(16.dp),
+                    onHeadphoneProfileChange = {},
+                    onDismissQ30Tip = {},
+                    onSessionModeChange = {},
+                    onSetAppRule = {},
+                    onRemoveAppRule = {},
+                    onTogglePinTrack = { _, _, _ -> },
+                    onThemeModeChange = {},
+                    onRequestRecordAudio = {},
+                    onOpenNotificationListenerSettings = {},
+                    onRequestPostNotifications = {},
+                    onRequestBatteryOptimizationExemption = {},
+                    onImportCatalogHeadphone = { selectedCatalogEntry = it },
+                )
+            }
+        }
+
+        composeRule.onNodeWithText(str(R.string.telemetry_backend_dp_fmt, 31, 5)).assertIsDisplayed()
+
+        composeRule.onNodeWithTag("activity_list")
+            .performScrollToNode(hasTestTag("headphone_curve_sparkline"))
+        composeRule.onNodeWithTag("headphone_curve_sparkline").assertIsDisplayed()
+
+        val importAutoEqBtn = str(R.string.autoeq_import_btn)
+        composeRule.onNodeWithTag("activity_list")
+            .performScrollToNode(hasText(importAutoEqBtn))
+        composeRule.onNodeWithText(importAutoEqBtn).performClick()
+
+        composeRule.onNodeWithTag("catalog_search_input").performTextInput("Moondrop")
+        composeRule.onNodeWithText("Moondrop Chu II (Harman)").assertIsDisplayed()
+        composeRule.onNodeWithText("Sony WH-1000XM5 (Harman)").assertDoesNotExist()
+
+        composeRule.onNodeWithContentDescription(str(R.string.autoeq_catalog_clear_search_cd)).performClick()
+        composeRule.onNodeWithTag("catalog_cat_q30").performClick()
+        composeRule.onNodeWithText("Soundcore Life Q30 (ANC On · Oratory1990)").assertIsDisplayed()
+        composeRule.onNodeWithText("Moondrop Chu II (Harman)").assertDoesNotExist()
+
+        composeRule.onNodeWithTag("catalog_cat_all").performClick()
+        composeRule.onNodeWithTag("catalog_search_input").performTextInput("Q30")
+        composeRule.onNodeWithText("Soundcore Life Q30 (ANC Off · Harman)").assertIsDisplayed().performClick()
+        assertEquals("catalog_soundcore_q30_anc_off", selectedCatalogEntry?.catalogId)
+
+        composeRule.onNodeWithText(importAutoEqBtn).performClick()
+        composeRule.onNodeWithText(str(R.string.autoeq_tab_paste)).performClick()
+        composeRule.onNodeWithText(str(R.string.autoeq_import_save)).performClick()
+        composeRule.onNodeWithTag("autoeq_paste_error").assertIsDisplayed()
     }
 }

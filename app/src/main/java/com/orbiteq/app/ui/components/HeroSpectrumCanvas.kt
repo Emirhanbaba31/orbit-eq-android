@@ -72,28 +72,40 @@ import kotlinx.coroutines.isActive
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.log2
 
 private const val PLOT_MIN_DB = -15f
 private const val PLOT_MAX_DB = 15f
 private const val PREAMP_BAR_MAX_CUT_DB = 12f
 private const val SPECTRUM_BIN_COUNT = 36
 private const val EQ_BAND_COUNT = 10
+private const val EQ_31_BAND_COUNT = 31
+private val LOG_SPAN_20_TO_20K = log2(20000f / 20f)
+internal val ISO_31_LOG_FRACTIONS: FloatArray = FloatArray(EQ_31_BAND_COUNT) { i ->
+    (log2(PleasureProfiles.ISO_31_FREQUENCIES_HZ[i] / 20f) / LOG_SPAN_20_TO_20K).coerceIn(0f, 1f)
+}
+private val ISO_10_IN_31_INDICES = intArrayOf(2, 5, 8, 11, 14, 17, 20, 23, 26, 29)
 private val GRID_DB_LEVELS = floatArrayOf(-12f, -6f, 6f, 12f)
 
 private class SpectrumAnimBuffer {
     val displayBins = FloatArray(SPECTRUM_BIN_COUNT)
     val displayLive = FloatArray(EQ_BAND_COUNT)
+    val displayLive31 = FloatArray(EQ_31_BAND_COUNT)
     val displayTarget = FloatArray(EQ_BAND_COUNT)
 
     val targetBins = FloatArray(SPECTRUM_BIN_COUNT)
     val targetLive = FloatArray(EQ_BAND_COUNT)
+    val targetLive31 = FloatArray(EQ_31_BAND_COUNT)
     val targetCurve = FloatArray(EQ_BAND_COUNT)
 
     // Pre-allocated coordinate buffers reused across 60fps frames
     val bandXs = FloatArray(EQ_BAND_COUNT)
+    val band31Xs = FloatArray(EQ_31_BAND_COUNT)
     val targetYs = FloatArray(EQ_BAND_COUNT)
     val liveYs = FloatArray(EQ_BAND_COUNT)
+    val live31Ys = FloatArray(EQ_31_BAND_COUNT)
 
+    var hasLive31Curve: Boolean = false
     var dataVersion by mutableLongStateOf(0L)
     var frameTick by mutableLongStateOf(0L)
     private var lastFrameNanos: Long = 0L
@@ -101,10 +113,16 @@ private class SpectrumAnimBuffer {
     fun updateTargets(
         bins: List<Float>,
         live: List<Float>,
+        live31: List<Float>,
         target: List<Float>,
         activeSignal: Boolean,
     ) {
         var changed = false
+        val use31 = live31.size == EQ_31_BAND_COUNT
+        if (hasLive31Curve != use31) {
+            hasLive31Curve = use31
+            changed = true
+        }
         for (i in 0 until SPECTRUM_BIN_COUNT) {
             val next = if (activeSignal) sanitizeFinite(bins.getOrElse(i) { 0f }).coerceIn(0f, 1f) else 0f
             if (abs(next - targetBins[i]) > 1e-4f) {
@@ -128,6 +146,17 @@ private class SpectrumAnimBuffer {
                 changed = true
             }
         }
+        for (i in 0 until EQ_31_BAND_COUNT) {
+            val nextLive31 = if (use31 && activeSignal) {
+                sanitizeFinite(live31[i]).coerceIn(PLOT_MIN_DB, PLOT_MAX_DB)
+            } else {
+                0f
+            }
+            if (abs(nextLive31 - targetLive31[i]) > 1e-4f) {
+                targetLive31[i] = nextLive31
+                changed = true
+            }
+        }
         if (changed) {
             dataVersion++
         }
@@ -136,6 +165,7 @@ private class SpectrumAnimBuffer {
     fun snapAllWithoutTick() {
         targetBins.copyInto(displayBins)
         targetLive.copyInto(displayLive)
+        targetLive31.copyInto(displayLive31)
         targetCurve.copyInto(displayTarget)
         lastFrameNanos = 0L
     }
@@ -147,6 +177,11 @@ private class SpectrumAnimBuffer {
         for (i in 0 until EQ_BAND_COUNT) {
             if (abs(targetLive[i] - displayLive[i]) > 0.02f) return false
             if (abs(targetCurve[i] - displayTarget[i]) > 0.02f) return false
+        }
+        if (hasLive31Curve) {
+            for (i in 0 until EQ_31_BAND_COUNT) {
+                if (abs(targetLive31[i] - displayLive31[i]) > 0.02f) return false
+            }
         }
         return true
     }
@@ -179,6 +214,13 @@ private class SpectrumAnimBuffer {
             val nextTarget = curTarget + curveAlpha * (targetCurve[i] - curTarget)
             displayTarget[i] = if (abs(targetCurve[i] - nextTarget) < 0.015f) targetCurve[i] else nextTarget
         }
+        if (hasLive31Curve) {
+            for (i in 0 until EQ_31_BAND_COUNT) {
+                val curLive31 = displayLive31[i]
+                val nextLive31 = curLive31 + curveAlpha * (targetLive31[i] - curLive31)
+                displayLive31[i] = if (abs(targetLive31[i] - nextLive31) < 0.015f) targetLive31[i] else nextLive31
+            }
+        }
         frameTick++
     }
 }
@@ -196,6 +238,7 @@ fun HeroSpectrumCanvas(
     limiterCeilingDb: Float,
     powerEnabled: Boolean,
     modifier: Modifier = Modifier,
+    liveEqCurve31Db: List<Float> = emptyList(),
 ) {
     val colors = LocalOrbitColors.current
     val reducedMotion = LocalReducedMotion.current
@@ -208,6 +251,7 @@ fun HeroSpectrumCanvas(
         animBuffer.updateTargets(
             bins = spectrumBins36,
             live = liveCurveDb,
+            live31 = liveEqCurve31Db,
             target = targetCurveDb,
             activeSignal = isLiveProcessing,
         )
@@ -298,6 +342,7 @@ fun HeroSpectrumCanvas(
     val binsState = rememberUpdatedState(spectrumBins36)
     val targetCurveState = rememberUpdatedState(targetCurveDb)
     val liveCurveState = rememberUpdatedState(liveCurveDb)
+    val liveCurve31State = rememberUpdatedState(liveEqCurve31Db)
     val trimsState = rememberUpdatedState(manualTrimsDb)
 
     Surface(
@@ -403,6 +448,9 @@ fun HeroSpectrumCanvas(
                                 for (b in 0 until EQ_BAND_COUNT) {
                                     animBuffer.bandXs[b] = plotLeft + (b / (EQ_BAND_COUNT - 1).toFloat()) * plotW
                                 }
+                                for (b in 0 until EQ_31_BAND_COUNT) {
+                                    animBuffer.band31Xs[b] = plotLeft + ISO_31_LOG_FRACTIONS[b] * plotW
+                                }
 
                                 val minorStroke = 0.75.dp.toPx()
                                 val majorStroke = 1.dp.toPx()
@@ -492,7 +540,9 @@ fun HeroSpectrumCanvas(
                                     val binsSource = binsState.value
                                     val targetSource = targetCurveState.value
                                     val liveSource = liveCurveState.value
+                                    val live31Source = liveCurve31State.value
                                     val trimsSource = trimsState.value
+                                    val use31BandCurve = live31Source.size == EQ_31_BAND_COUNT
 
                                     fun dbToY(db: Float): Float {
                                         val norm = ((PLOT_MAX_DB - db) / (PLOT_MAX_DB - PLOT_MIN_DB)).coerceIn(0f, 1f)
@@ -577,16 +627,33 @@ fun HeroSpectrumCanvas(
                                         }
                                         animBuffer.targetYs[b] = dbToY(targetDb)
 
-                                        val liveDb = if (isReduced) {
-                                            if (liveProcessing) {
-                                                sanitizeFinite(liveSource.getOrElse(b) { 0f }).coerceIn(PLOT_MIN_DB, PLOT_MAX_DB)
+                                        if (!use31BandCurve) {
+                                            val liveDb = if (isReduced) {
+                                                if (liveProcessing) {
+                                                    sanitizeFinite(liveSource.getOrElse(b) { 0f }).coerceIn(PLOT_MIN_DB, PLOT_MAX_DB)
+                                                } else {
+                                                    0f
+                                                }
                                             } else {
-                                                0f
+                                                animBuffer.displayLive[b]
                                             }
-                                        } else {
-                                            animBuffer.displayLive[b]
+                                            animBuffer.liveYs[b] = dbToY(liveDb)
                                         }
-                                        animBuffer.liveYs[b] = dbToY(liveDb)
+                                    }
+
+                                    if (use31BandCurve) {
+                                        for (b in 0 until EQ_31_BAND_COUNT) {
+                                            val live31Db = if (isReduced) {
+                                                if (liveProcessing) {
+                                                    sanitizeFinite(live31Source[b]).coerceIn(PLOT_MIN_DB, PLOT_MAX_DB)
+                                                } else {
+                                                    0f
+                                                }
+                                            } else {
+                                                animBuffer.displayLive31[b]
+                                            }
+                                            animBuffer.live31Ys[b] = dbToY(live31Db)
+                                        }
                                     }
 
                                     // Layer 3a: Dashed Target Curve
@@ -603,10 +670,13 @@ fun HeroSpectrumCanvas(
                                         style = targetStroke,
                                     )
 
-                                    // Layer 3b: Glowing Live EQ Curve + Fill + Orbital Nodes
+                                    // Layer 3b: Glowing Live EQ Curve (31-band ISO when available, 10-band fallback) + Fill + Orbital Nodes
+                                    val liveXs = if (use31BandCurve) animBuffer.band31Xs else animBuffer.bandXs
+                                    val liveYs = if (use31BandCurve) animBuffer.live31Ys else animBuffer.liveYs
+                                    val lastLiveIdx = if (use31BandCurve) EQ_31_BAND_COUNT - 1 else EQ_BAND_COUNT - 1
                                     buildCatmullRomPath(
-                                        xs = animBuffer.bandXs,
-                                        ys = animBuffer.liveYs,
+                                        xs = liveXs,
+                                        ys = liveYs,
                                         minY = plotTop,
                                         maxY = plotBottom,
                                         outPath = livePath,
@@ -615,8 +685,8 @@ fun HeroSpectrumCanvas(
 
                                     liveFillPath.reset()
                                     liveFillPath.addPath(livePath)
-                                    liveFillPath.lineTo(animBuffer.bandXs[EQ_BAND_COUNT - 1], zeroY)
-                                    liveFillPath.lineTo(animBuffer.bandXs[0], zeroY)
+                                    liveFillPath.lineTo(liveXs[lastLiveIdx], zeroY)
+                                    liveFillPath.lineTo(liveXs[0], zeroY)
                                     liveFillPath.close()
 
                                     drawPath(
@@ -643,9 +713,10 @@ fun HeroSpectrumCanvas(
                                         style = coreStroke,
                                     )
 
-                                    // Orbital nodes on each of the 10 ISO bands
+                                    // Orbital nodes at the 10 ISO anchor frequencies along the live curve
                                     for (b in 0 until EQ_BAND_COUNT) {
-                                        val center = Offset(animBuffer.bandXs[b], animBuffer.liveYs[b])
+                                        val nodeIdx = if (use31BandCurve) ISO_10_IN_31_INDICES[b] else b
+                                        val center = Offset(liveXs[nodeIdx], liveYs[nodeIdx])
                                         val trimActive = abs(sanitizeFinite(trimsSource.getOrElse(b) { 0f })) > 0.05f
                                         if (trimActive && liveProcessing) {
                                             drawCircle(
@@ -940,7 +1011,7 @@ private fun HudTelemetryChip(
     }
 }
 
-private fun buildCatmullRomPath(
+internal fun buildCatmullRomPath(
     xs: FloatArray,
     ys: FloatArray,
     minY: Float,

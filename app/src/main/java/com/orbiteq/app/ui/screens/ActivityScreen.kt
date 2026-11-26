@@ -2,9 +2,11 @@ package com.orbiteq.app.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +52,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -69,6 +78,7 @@ import com.orbiteq.app.dsp.AppRuleResolver
 import com.orbiteq.app.dsp.AutoEqCatalog
 import com.orbiteq.app.dsp.AutoEqParseResult
 import com.orbiteq.app.dsp.AutoEqParser
+import com.orbiteq.app.dsp.CatalogCategory
 import com.orbiteq.app.dsp.CatalogHeadphoneEntry
 import com.orbiteq.app.model.AppRule
 import com.orbiteq.app.model.AppRuleAction
@@ -84,6 +94,8 @@ import com.orbiteq.app.ui.OrbitGlassCard
 import com.orbiteq.app.ui.OrbitPermissionState
 import com.orbiteq.app.ui.OrbitStatusChip
 import com.orbiteq.app.ui.SectionLabelText
+import com.orbiteq.app.ui.components.ISO_31_LOG_FRACTIONS
+import com.orbiteq.app.ui.components.buildCatmullRomPath
 import com.orbiteq.app.ui.icons.OrbitIcons
 import com.orbiteq.app.ui.localizedSpectralTag
 import com.orbiteq.app.ui.modeDisplayName
@@ -92,6 +104,7 @@ import com.orbiteq.app.ui.resolveOutputDeviceName
 import com.orbiteq.app.ui.theme.LocalOrbitColors
 import com.orbiteq.app.ui.theme.SpaceMonoTabularStyle
 import java.util.Locale
+import kotlin.math.abs
 
 private enum class AutoEqImportTab {
     CATALOG,
@@ -500,12 +513,18 @@ private fun LiveEngineTelemetryCard(
 
     val (backendTitle, backendSub) = when (telemetry.dspBackend) {
         DspBackend.DYNAMICS_PROCESSING -> {
-            val titleRes = if (telemetry.preEqBandCount >= 31) {
-                R.string.telemetry_backend_dp_31
+            val title = if (telemetry.mbcBandCount > 0) {
+                stringResource(
+                    R.string.telemetry_backend_dp_fmt,
+                    telemetry.preEqBandCount,
+                    telemetry.mbcBandCount,
+                )
+            } else if (telemetry.preEqBandCount >= 31) {
+                stringResource(R.string.telemetry_backend_dp_31)
             } else {
-                R.string.telemetry_backend_dp
+                stringResource(R.string.telemetry_backend_dp)
             }
-            stringResource(titleRes) to stringResource(R.string.telemetry_backend_dp_sub)
+            title to stringResource(R.string.telemetry_backend_dp_sub)
         }
         DspBackend.LEGACY_EQ -> stringResource(R.string.telemetry_backend_legacy) to
             stringResource(R.string.telemetry_backend_legacy_sub)
@@ -927,6 +946,13 @@ private fun HeadphoneCompensationCard(
                             text = stringResource(R.string.autoeq_custom_badge, custom.sourceLabel),
                             accentColor = if (selected) colors.ionAccent else colors.textSecondary,
                         )
+                        if (selected && custom.gains31Db.size == 31) {
+                            HeadphoneCurveSparkline(
+                                gains31Db = custom.gains31Db,
+                                profileName = custom.name,
+                                accentColor = colors.liveAudioPrimary,
+                            )
+                        }
                     }
                     Spacer(modifier = Modifier.width(6.dp))
                     if (selected) {
@@ -992,6 +1018,104 @@ private fun HeadphoneCompensationCard(
 }
 
 @Composable
+private fun HeadphoneCurveSparkline(
+    gains31Db: List<Float>,
+    profileName: String,
+    accentColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalOrbitColors.current
+    val sparklineCd = stringResource(R.string.autoeq_sparkline_cd_fmt, profileName)
+    val xs = remember { FloatArray(31) }
+    val ys = remember { FloatArray(31) }
+    val curvePath = remember { Path() }
+    val fillPath = remember { Path() }
+
+    val maxAbsDb = remember(gains31Db) {
+        var peak = 6f
+        for (i in 0 until minOf(31, gains31Db.size)) {
+            val v = gains31Db[i]
+            if (v.isFinite()) {
+                val mag = abs(v).coerceAtMost(15f)
+                if (mag > peak) peak = mag
+            }
+        }
+        peak
+    }
+
+    Canvas(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(28.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(colors.background.copy(alpha = 0.55f))
+            .border(1.dp, colors.borderHairline, RoundedCornerShape(8.dp))
+            .testTag("headphone_curve_sparkline")
+            .semantics {
+                contentDescription = sparklineCd
+            },
+    ) {
+        val w = size.width
+        val h = size.height
+        if (w <= 4f || h <= 4f) return@Canvas
+
+        val padX = 4.dp.toPx()
+        val padY = 4.dp.toPx()
+        val plotW = (w - padX * 2f).coerceAtLeast(1f)
+        val plotH = (h - padY * 2f).coerceAtLeast(1f)
+        val zeroY = padY + plotH * 0.5f
+
+        for (i in 0 until 31) {
+            xs[i] = padX + ISO_31_LOG_FRACTIONS[i] * plotW
+            val raw = gains31Db.getOrElse(i) { 0f }
+            val safeDb = if (raw.isFinite()) raw.coerceIn(-maxAbsDb, maxAbsDb) else 0f
+            val norm = ((maxAbsDb - safeDb) / (2f * maxAbsDb)).coerceIn(0f, 1f)
+            ys[i] = padY + norm * plotH
+        }
+
+        buildCatmullRomPath(
+            xs = xs,
+            ys = ys,
+            minY = padY,
+            maxY = h - padY,
+            outPath = curvePath,
+        )
+        fillPath.reset()
+        fillPath.addPath(curvePath)
+        fillPath.lineTo(xs[30], zeroY)
+        fillPath.lineTo(xs[0], zeroY)
+        fillPath.close()
+
+        drawLine(
+            color = colors.gridMajor,
+            start = Offset(padX, zeroY),
+            end = Offset(w - padX, zeroY),
+            strokeWidth = 0.75.dp.toPx(),
+        )
+        drawPath(
+            path = fillPath,
+            brush = Brush.verticalGradient(
+                colors = listOf(
+                    accentColor.copy(alpha = 0.24f),
+                    Color.Transparent,
+                ),
+                startY = padY,
+                endY = h - padY,
+            ),
+        )
+        drawPath(
+            path = curvePath,
+            color = accentColor,
+            style = Stroke(
+                width = 1.6.dp.toPx(),
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round,
+            ),
+        )
+    }
+}
+
+@Composable
 private fun AutoEqImportDialog(
     onDismiss: () -> Unit,
     onSelectCatalogEntry: (CatalogHeadphoneEntry) -> Unit,
@@ -1000,9 +1124,20 @@ private fun AutoEqImportDialog(
 ) {
     val colors = LocalOrbitColors.current
     var selectedTab by rememberSaveable { mutableStateOf(AutoEqImportTab.CATALOG) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var selectedCategoryName by rememberSaveable { mutableStateOf<String?>(null) }
     var nameInput by rememberSaveable { mutableStateOf("") }
     var rawTextInput by rememberSaveable { mutableStateOf("") }
     var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+
+    val selectedCategory = remember(selectedCategoryName) {
+        selectedCategoryName?.let { name ->
+            CatalogCategory.entries.firstOrNull { it.name == name }
+        }
+    }
+    val filteredCatalogEntries = remember(searchQuery, selectedCategory) {
+        AutoEqCatalog.filter(searchQuery, selectedCategory)
+    }
 
     val emptyNameError = stringResource(R.string.autoeq_error_empty_name)
     val invalidFormatError = stringResource(R.string.autoeq_error_invalid_format)
@@ -1011,6 +1146,14 @@ private fun AutoEqImportDialog(
         AutoEqImportTab.CATALOG to stringResource(R.string.autoeq_tab_catalog),
         AutoEqImportTab.FILE to stringResource(R.string.autoeq_tab_file),
         AutoEqImportTab.PASTE to stringResource(R.string.autoeq_tab_paste),
+    )
+    val categoryFilters = listOf(
+        null to stringResource(R.string.autoeq_cat_all),
+        CatalogCategory.Q30 to stringResource(R.string.autoeq_cat_q30),
+        CatalogCategory.OVER_EAR to stringResource(R.string.autoeq_cat_over_ear),
+        CatalogCategory.TWS to stringResource(R.string.autoeq_cat_tws),
+        CatalogCategory.IEM to stringResource(R.string.autoeq_cat_iem),
+        CatalogCategory.STUDIO to stringResource(R.string.autoeq_cat_studio),
     )
 
     AlertDialog(
@@ -1077,59 +1220,217 @@ private fun AutoEqImportDialog(
                     }
                 }
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 320.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    when (selectedTab) {
-                        AutoEqImportTab.CATALOG -> {
-                            Text(
-                                text = stringResource(R.string.autoeq_catalog_hint),
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    color = colors.textSecondary,
-                                ),
-                            )
-                            AutoEqCatalog.entries.forEach { entry ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(min = 52.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(colors.surface)
-                                        .border(1.dp, colors.borderHairline, RoundedCornerShape(12.dp))
-                                        .clickable(
-                                            role = Role.Button,
-                                            onClick = { onSelectCatalogEntry(entry) },
+                // Keep validation feedback pinned above scroll area so it remains visible with IME open
+                val currentError = errorMessage
+                if (selectedTab == AutoEqImportTab.PASTE && !currentError.isNullOrBlank()) {
+                    Text(
+                        text = currentError,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("autoeq_paste_error"),
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = colors.danger,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                    )
+                }
+
+                when (selectedTab) {
+                    AutoEqImportTab.CATALOG -> {
+                        val clearSearchCd = stringResource(R.string.autoeq_catalog_clear_search_cd)
+                        Text(
+                            text = stringResource(R.string.autoeq_catalog_hint),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = colors.textSecondary,
+                            ),
+                        )
+
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { if (it.length <= 60) searchQuery = it },
+                            singleLine = true,
+                            placeholder = {
+                                Text(
+                                    text = stringResource(R.string.autoeq_catalog_search_hint),
+                                    color = colors.textMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            trailingIcon = if (searchQuery.isNotEmpty()) {
+                                {
+                                    Box(
+                                        modifier = Modifier
+                                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable(
+                                                role = Role.Button,
+                                                onClick = { searchQuery = "" },
+                                            )
+                                            .semantics {
+                                                contentDescription = clearSearchCd
+                                            },
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            imageVector = OrbitIcons.Close,
+                                            contentDescription = null,
+                                            tint = colors.textSecondary,
+                                            modifier = Modifier.size(16.dp),
                                         )
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                ) {
-                                    Text(
-                                        text = entry.name,
-                                        modifier = Modifier.weight(1f),
-                                        style = MaterialTheme.typography.titleSmall.copy(
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = colors.textPrimary,
+                                    }
+                                }
+                            } else {
+                                null
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("catalog_search_input"),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = colors.textPrimary,
+                                unfocusedTextColor = colors.textPrimary,
+                                focusedBorderColor = colors.ionAccent,
+                                unfocusedBorderColor = colors.borderHairline,
+                                cursorColor = colors.ionAccent,
+                            ),
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .selectableGroup(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            categoryFilters.forEach { (category, label) ->
+                                val selected = category == selectedCategory
+                                val chipTag = "catalog_cat_${category?.name?.lowercase(Locale.ROOT) ?: "all"}"
+                                Box(
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag(chipTag)
+                                        .selectable(
+                                            selected = selected,
+                                            role = Role.RadioButton,
+                                            onClick = { selectedCategoryName = category?.name },
                                         ),
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Icon(
-                                        imageVector = OrbitIcons.ChevronRight,
-                                        contentDescription = null,
-                                        tint = colors.ionAccent,
-                                        modifier = Modifier.size(18.dp),
-                                    )
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .background(if (selected) colors.primaryAccent else colors.surface)
+                                            .border(
+                                                width = 1.dp,
+                                                color = if (selected) colors.borderActive else colors.borderHairline,
+                                                shape = RoundedCornerShape(999.dp),
+                                            )
+                                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            style = SpaceMonoTabularStyle.copy(
+                                                fontSize = 10.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (selected) colors.onPrimaryAccent else colors.textSecondary,
+                                            ),
+                                            maxLines = 1,
+                                        )
+                                    }
                                 }
                             }
                         }
 
-                        AutoEqImportTab.FILE -> {
+                        Text(
+                            text = stringResource(R.string.autoeq_catalog_count_fmt, filteredCatalogEntries.size),
+                            style = SpaceMonoTabularStyle.copy(
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = colors.textMuted,
+                            ),
+                            maxLines = 1,
+                        )
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 120.dp, max = 210.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (filteredCatalogEntries.isEmpty()) {
+                                Text(
+                                    text = stringResource(R.string.autoeq_catalog_empty),
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = colors.textSecondary,
+                                    ),
+                                    modifier = Modifier.padding(vertical = 12.dp),
+                                )
+                            } else {
+                                filteredCatalogEntries.forEach { entry ->
+                                    val categoryLabel = catalogCategoryLabel(entry.category)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 52.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(colors.surface)
+                                            .border(1.dp, colors.borderHairline, RoundedCornerShape(12.dp))
+                                            .clickable(
+                                                role = Role.Button,
+                                                onClick = { onSelectCatalogEntry(entry) },
+                                            )
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                                        ) {
+                                            Text(
+                                                text = entry.name,
+                                                style = MaterialTheme.typography.titleSmall.copy(
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = colors.textPrimary,
+                                                ),
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            Text(
+                                                text = "${entry.brand} · $categoryLabel",
+                                                style = SpaceMonoTabularStyle.copy(
+                                                    fontSize = 10.sp,
+                                                    color = colors.textMuted,
+                                                ),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Icon(
+                                            imageVector = OrbitIcons.ChevronRight,
+                                            contentDescription = null,
+                                            tint = colors.ionAccent,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    AutoEqImportTab.FILE -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 320.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             Text(
                                 text = stringResource(R.string.autoeq_file_hint),
                                 style = MaterialTheme.typography.bodySmall.copy(
@@ -1160,8 +1461,23 @@ private fun AutoEqImportDialog(
                                 )
                             }
                         }
+                    }
 
-                        AutoEqImportTab.PASTE -> {
+                    AutoEqImportTab.PASTE -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 320.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.autoeq_paste_helper),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = colors.textSecondary,
+                                ),
+                            )
+
                             OutlinedTextField(
                                 value = nameInput,
                                 onValueChange = {
@@ -1220,17 +1536,6 @@ private fun AutoEqImportDialog(
                                     cursorColor = colors.ionAccent,
                                 ),
                             )
-
-                            val currentError = errorMessage
-                            if (!currentError.isNullOrBlank()) {
-                                Text(
-                                    text = currentError,
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = colors.danger,
-                                        fontWeight = FontWeight.Medium,
-                                    ),
-                                )
-                            }
                         }
                     }
                 }
@@ -1275,6 +1580,15 @@ private fun AutoEqImportDialog(
             }
         },
     )
+}
+
+@Composable
+private fun catalogCategoryLabel(category: CatalogCategory): String = when (category) {
+    CatalogCategory.Q30 -> stringResource(R.string.autoeq_cat_q30)
+    CatalogCategory.OVER_EAR -> stringResource(R.string.autoeq_cat_over_ear)
+    CatalogCategory.TWS -> stringResource(R.string.autoeq_cat_tws)
+    CatalogCategory.IEM -> stringResource(R.string.autoeq_cat_iem)
+    CatalogCategory.STUDIO -> stringResource(R.string.autoeq_cat_studio)
 }
 
 @Composable

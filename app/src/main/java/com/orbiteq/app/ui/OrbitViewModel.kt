@@ -21,6 +21,7 @@ import com.orbiteq.app.dsp.AutoEqParseResult
 import com.orbiteq.app.dsp.AutoEqParser
 import com.orbiteq.app.dsp.CatalogHeadphoneEntry
 import com.orbiteq.app.model.AppRule
+import com.orbiteq.app.model.DeEsserMode
 import com.orbiteq.app.model.HeadphoneProfile
 import com.orbiteq.app.model.MbcMode
 import com.orbiteq.app.model.OrbitThemeMode
@@ -152,6 +153,18 @@ class OrbitViewModel(application: Application) : AndroidViewModel(application) {
         OrbitEngineRepository.setChannelBalance(balance)
     }
 
+    fun setToneTiltDbPerOct(tilt: Float) {
+        OrbitEngineRepository.setToneTiltDbPerOct(tilt)
+    }
+
+    fun setDeEsserMode(mode: DeEsserMode) {
+        OrbitEngineRepository.setDeEsserMode(mode)
+    }
+
+    fun setLoudnessMatchedBypass(enabled: Boolean) {
+        OrbitEngineRepository.setLoudnessMatchedBypass(enabled)
+    }
+
     fun setResponseSpeed(speed: ResponseSpeed) {
         OrbitEngineRepository.setResponseSpeed(speed)
     }
@@ -188,7 +201,7 @@ class OrbitViewModel(application: Application) : AndroidViewModel(application) {
             val imported = OrbitEngineRepository.importCustomHeadphoneProfile(
                 name = resolvedName,
                 gains31Db = result.gains31Db,
-                sourceLabel = "AutoEQ",
+                sourceLabel = result.sourceLabel,
                 assignToCurrentDevice = true,
             )
             if (imported != null) {
@@ -200,7 +213,7 @@ class OrbitViewModel(application: Application) : AndroidViewModel(application) {
 
     fun importCatalogHeadphone(entry: CatalogHeadphoneEntry) {
         val existing = uiState.value.settings.customHeadphoneProfiles.firstOrNull {
-            it.name.equals(entry.name, ignoreCase = true)
+            it.id == entry.catalogId || it.name.equals(entry.name, ignoreCase = true)
         }
         if (existing != null) {
             OrbitEngineRepository.selectCustomHeadphoneProfileForCurrentDevice(existing.id)
@@ -212,6 +225,7 @@ class OrbitViewModel(application: Application) : AndroidViewModel(application) {
                 extraHeadroomDb = catalogProfile.extraHeadroomDb,
                 sourceLabel = catalogProfile.sourceLabel,
                 assignToCurrentDevice = true,
+                preferredId = entry.catalogId,
             )
         }
         OrbitWidgetUpdater.requestUpdate(getApplication())

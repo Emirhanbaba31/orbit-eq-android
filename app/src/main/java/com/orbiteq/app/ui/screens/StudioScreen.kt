@@ -210,6 +210,7 @@ fun StudioScreen(
                 loudnessBoostDb = uiState.telemetry.loudnessBoostDb,
                 limiterCeilingDb = uiState.telemetry.limiterCeilingDb,
                 powerEnabled = uiState.settings.powerEnabled,
+                liveEqCurve31Db = uiState.telemetry.liveEqCurve31Db,
             )
         }
 
@@ -282,6 +283,11 @@ private fun NowPlayingTelemetryPill(
     val showHiRes31Badge = uiState.settings.powerEnabled &&
         !effectiveBypass &&
         uiState.telemetry.preEqBandCount >= 31
+    val showMatchedBypassChip = uiState.settings.powerEnabled &&
+        uiState.settings.bypassed &&
+        !uiState.autoBypassedByRule &&
+        uiState.settings.loudnessMatchedBypass &&
+        uiState.telemetry.bypassMatchGainDb < -0.05f
     val safeArtwork = nowPlayingArtwork?.takeIf { !it.isRecycled }
 
     OrbitGlassCard(
@@ -387,6 +393,15 @@ private fun NowPlayingTelemetryPill(
                         OrbitStatusChip(
                             text = stringResource(R.string.hud_hires_31band_badge),
                             accentColor = colors.ionAccent,
+                        )
+                    }
+                    if (showMatchedBypassChip) {
+                        OrbitStatusChip(
+                            text = stringResource(
+                                R.string.ab_matched_chip_fmt,
+                                uiState.telemetry.bypassMatchGainDb,
+                            ),
+                            accentColor = colors.danger,
                         )
                     }
                 }

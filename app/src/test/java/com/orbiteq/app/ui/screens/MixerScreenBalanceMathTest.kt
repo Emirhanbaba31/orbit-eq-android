@@ -36,4 +36,35 @@ class MixerScreenBalanceMathTest {
         assertEquals(-1.0f, snapAndQuantizeChannelBalance(-1.4f), 1e-6f)
         assertEquals(0f, snapAndQuantizeChannelBalance(Float.NaN), 1e-6f)
     }
+
+    @Test
+    fun normalizeDisplayedToneTiltAlignsWithCenterDeadbandInclusive() {
+        assertEquals(0f, normalizeDisplayedToneTilt(0f), 1e-6f)
+        assertEquals(0f, normalizeDisplayedToneTilt(0.08f), 1e-6f)
+        assertEquals(0f, normalizeDisplayedToneTilt(-0.08f), 1e-6f)
+        assertEquals(0f, normalizeDisplayedToneTilt(Float.NaN), 1e-6f)
+        assertEquals(0f, normalizeDisplayedToneTilt(Float.POSITIVE_INFINITY), 1e-6f)
+
+        assertEquals(0.1f, normalizeDisplayedToneTilt(0.1f), 1e-6f)
+        assertEquals(-0.6f, normalizeDisplayedToneTilt(-0.6f), 1e-6f)
+        assertEquals(-1.5f, normalizeDisplayedToneTilt(-2.5f), 1e-6f)
+        assertEquals(1.5f, normalizeDisplayedToneTilt(2.5f), 1e-6f)
+    }
+
+    @Test
+    fun snapAndQuantizeToneTiltSnapsDeadbandAndQuantizesToTenthDbSteps() {
+        assertEquals(0f, snapAndQuantizeToneTilt(0f), 1e-6f)
+        assertEquals(0f, snapAndQuantizeToneTilt(0.08f), 1e-6f)
+        assertEquals(0f, snapAndQuantizeToneTilt(-0.08f), 1e-6f)
+        assertEquals(0f, snapAndQuantizeToneTilt(0.05f), 1e-6f)
+        assertEquals(0f, snapAndQuantizeToneTilt(-0.05f), 1e-6f)
+
+        assertEquals(0.1f, snapAndQuantizeToneTilt(0.09f), 1e-6f)
+        assertEquals(-0.1f, snapAndQuantizeToneTilt(-0.09f), 1e-6f)
+        assertEquals(0.6f, snapAndQuantizeToneTilt(0.64f), 1e-6f)
+        assertEquals(-0.7f, snapAndQuantizeToneTilt(-0.66f), 1e-6f)
+        assertEquals(1.5f, snapAndQuantizeToneTilt(2.4f), 1e-6f)
+        assertEquals(-1.5f, snapAndQuantizeToneTilt(-2.4f), 1e-6f)
+        assertEquals(0f, snapAndQuantizeToneTilt(Float.NaN), 1e-6f)
+    }
 }
