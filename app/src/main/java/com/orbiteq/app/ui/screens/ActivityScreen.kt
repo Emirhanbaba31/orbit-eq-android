@@ -1309,7 +1309,7 @@ private fun AutoEqImportDialog(
                                 val chipTag = "catalog_cat_${category?.name?.lowercase(Locale.ROOT) ?: "all"}"
                                 Box(
                                     modifier = Modifier
-                                        .heightIn(min = 48.dp)
+                                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                                         .testTag(chipTag)
                                         .selectable(
                                             selected = selected,
